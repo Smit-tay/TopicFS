@@ -4,8 +4,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(topic_fs)
 
-# Set C++ standard to 17 (compatible with ROS 2 Jazzy and nlohmann_json)
-set(CMAKE_CXX_STANDARD 17)
+# Set C++ standard to 20 (compatible with ROS 2 Jazzy and nlohmann_json)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable compiler warnings for GCC/Clang
@@ -22,10 +22,10 @@ find_package(rosidl_runtime_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FUSE REQUIRED fuse) # Use 'fuse3' if using FUSE 3.x
+pkg_check_modules(FUSE3 REQUIRED fuse3) # Use 'fuse3' if using FUSE 3.x
 
 # Find nlohmann_json (header-only library)
-find_package(nlohmann_json QUIET)
+find_package(nlohmann_json REQUIRED)
 if(NOT nlohmann_json_FOUND)
   message(WARNING "nlohmann_json not found via CMake, assuming system package")
 endif()
@@ -35,23 +35,26 @@ add_executable(topic_fs
   src/main.cpp
   src/topicfs_node.cpp
   src/topicfs_fuse.cpp
+  src/topicfs.cpp
 )
 
 # Include directories for FUSE and nlohmann_json
 target_include_directories(topic_fs PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${FUSE_INCLUDE_DIRS}
-  /usr/include/nlohmann # Adjust if nlohmann_json is installed elsewhere
+  ${FUSE3_INCLUDE_DIRS}
+  ${nlohmann_json_INCLUDE_DIRS}
+  #/usr/include/nlohmann # Adjust if nlohmann_json is installed elsewhere
 )
 
 # Link libraries for FUSE
 target_link_libraries(topic_fs
-  ${FUSE_LIBRARIES}
+  ${FUSE3_LIBRARIES}
 )
 
 # Specify FUSE compiler flags
 target_compile_options(topic_fs PRIVATE ${FUSE_CFLAGS_OTHER})
 
+target_compile_definitions(topic_fs PRIVATE FUSE_USE_VERSION=31)
 
 install(TARGETS
   topic_fs
@@ -59,20 +62,18 @@ install(TARGETS
 )
 
 install(DIRECTORY
-  src/
+  include/${PROJECT_NAME}
   DESTINATION include/${PROJECT_NAME}
-  FILES_MATCHING PATTERN "*.hpp"
 )
 
 
 # ROS 2 dependencies (handles includes and linking)
 ament_target_dependencies(topic_fs
-  geometry_msgs
-  nlohmann_json
+#  geometry_msgs
   rclcpp  
-  rosbag2_cpp
+#  rosbag2_cpp
   rosidl_runtime_cpp  
-  std_msgs
+#  std_msgs
 )
 
 # Install executable

@@ -19,6 +19,10 @@
 // SOFTWARE.
 
 #include "topic_fs/topicfs_node.hpp"
+#include "topic_fs/topicfs_fuse.hpp"
+// #define FUSE_USE_VERSION 31
+#include <fuse3/fuse.h>
+#include <fuse_lowlevel.h>
 
 std::string base64_encode(const uint8_t* data, size_t length)
 {
@@ -39,16 +43,61 @@ std::string base64_encode(const uint8_t* data, size_t length)
   return encoded;
 }
 
-topicfsNode::topicfsNode()
-    : Node("ros2_fuse_node")
+void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle) {
+  if (!fuse_handle) {
+    RCLCPP_ERROR(this->get_logger(), "notify: no FUSE handle available");
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(notification_mutex_);
+  auto& last_time = last_notification_[topic];
+  if (now - last_time < notification_interval_) {
+    RCLCPP_DEBUG(this->get_logger(), "notify: throttled for %s", topic.c_str());
+    return;
+  }
+  last_time = now;
+
+  std::string path = topic + "/latest";
+  RCLCPP_DEBUG(this->get_logger(), "notify: invalidating %s", path.c_str());
+  struct fuse_session* session = fuse_get_session(fuse_handle);
+
+  // Look up inode for the file
+  // Compute the inode
+  ino_t st_ino = 1 + std::hash<std::string>{}("/" + topic.substr(1) + "/latest");
+  // struct stat stbuf;
+  // if( 0 != topicfs_getattr((path).c_str(), &stbuf, nullptr) ) {
+  //   RCLCPP_ERROR(this->get_logger(), "notify: failed to get attributes for %s", path.c_str());
+  //   return;
+  // }
+
+  // Notify inode change
+  //int ret = fuse_lowlevel_notify_inval_inode(session, stbuf.st_ino, 0, 0);
+  int ret = fuse_lowlevel_notify_inval_inode(session, st_ino, 0, 0);
+  if (ret != 0) {
+    RCLCPP_ERROR(this->get_logger(), "notify: failed to invalidate inode for %s: %s (errno=%d)", 
+                 path.c_str(), strerror(-ret), ret);
+  } else {
+    RCLCPP_DEBUG(this->get_logger(), "notify: successfully invalidated inode for %s", path.c_str());
+  }
+}
+
+topicfsNode::topicfsNode():Node("ros2_fuse_node")
 {
   // Declare writable_topics as a string array
   declare_parameter<std::vector<std::string>>("writable_topics", std::vector<std::string>{});
-
+  declare_parameter<int>("notification_interval_ms", 100);
+  
+  
   // Try to get writable_topics as an array
   try
   {
     get_parameter("writable_topics", writable_topics_);
+
+    int interval_ms; // needs to be converted to chrono::milliseconds later, type not supported by get_parameter directly
+    get_parameter("notification_interval_ms", interval_ms);
+    notification_interval_ = std::chrono::milliseconds(interval_ms);
+    RCLCPP_INFO(this->get_logger(), "Notification interval set to %d ms", interval_ms);
   }
   catch (const rclcpp::ParameterTypeException& e)
   {
@@ -89,29 +138,32 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
 
   try
   {
-    rclcpp::QoS qos(10);
-    qos.reliable();
-    qos.durability_volatile();
-    auto sub = create_generic_subscription(
-        topic_name, topic_type, qos,
-        [this, topic_name](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg) {
-          RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
-          const auto& buffer = serialized_msg->get_rcl_serialized_message();
-          if (buffer.buffer_length == 0)
-          {
-            RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s", topic_name.c_str());
-            return;
-          }
+      rclcpp::QoS qos(10);
+      qos.reliable();
+      qos.durability_volatile();
 
-          std::string encoded = base64_encode(buffer.buffer, buffer.buffer_length);
-          nlohmann::json j;
-          j["data"] = encoded;
+      auto sub = create_generic_subscription(
+      topic_name, topic_type, qos,
+      [this, topic_name](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg) {
+        RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
+        const auto& buffer = serialized_msg->get_rcl_serialized_message();
+        if (buffer.buffer_length == 0) {
+          RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s", topic_name.c_str());
+          return;
+        }
 
-          std::lock_guard<std::mutex> lock(messages_mutex);
-          latest_messages[topic_name] = j.dump();
-          message_versions_[topic_name]++;
-          RCLCPP_DEBUG(this->get_logger(), "Stored message for %s: %s (version %lu)", topic_name.c_str(), j.dump().c_str(), message_versions_[topic_name]);
-        });
+        std::string encoded = base64_encode(buffer.buffer, buffer.buffer_length);
+        nlohmann::json j;
+        j["data"] = encoded;
+
+        std::lock_guard<std::mutex> lock(messages_mutex);
+        latest_messages[topic_name] = j.dump();
+        message_versions_[topic_name]++;
+        notify_file_change(topic_name, fuse_handle_); // TODO: Pass fuse_handle properly
+        RCLCPP_DEBUG(this->get_logger(), "Stored message for %s: %s (version %lu)", 
+                     topic_name.c_str(), j.dump().c_str(), message_versions_[topic_name]);
+      });
+
     subscriptions_[topic_name] = sub;
     topic_types_[topic_name] = topic_type;
     message_versions_[topic_name] = 0;
