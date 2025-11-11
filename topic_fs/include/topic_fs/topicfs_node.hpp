@@ -1,6 +1,5 @@
 #ifndef TOPICFS_NODE_HPP
 #define TOPICFS_NODE_HPP
-
 #include <rclcpp/rclcpp.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -18,7 +17,6 @@ class topicfsNode : public rclcpp::Node
 {
 public:
   topicfsNode();
-
   std::unordered_map<std::string, std::string> latest_messages;
   std::mutex messages_mutex;
   std::unordered_map<std::string, uint64_t> message_versions_;
@@ -42,7 +40,4 @@ private:
   void discover_topics();
   void notify_file_change(const std::string& topic, fuse* fuse_handle);
 };
-
-extern std::shared_ptr<topicfsNode> ros2_node;
-
 #endif // TOPICFS_NODE_HPP
