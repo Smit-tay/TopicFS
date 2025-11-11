@@ -20,8 +20,7 @@ RUN apt-get update && \
     fuse3 \
     gdb \
     git \
-    libfuse-dev \
-    nano \
+    libfuse3-dev \
     nlohmann-json3-dev \
     openssh-client \
     python3-colcon-argcomplete \

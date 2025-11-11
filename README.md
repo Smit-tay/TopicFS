@@ -1,7 +1,7 @@
 # TopicFS
 <img src="topic_fs/docs/images/repo_icon.png" alt="Repo Icon" width="30%">
 
-TopicFS is a ROS2 package that provides a FUSE (Filesystem in Userspace) interface to access ROS2 topics as a virtual filesystem. Each topic with type `std_msgs/String` is represented as a directory, containing two files: `latest` (the most recent message in JSON format) and `info` (metadata about the topic). This allows developers to interact with ROS2 data using standard filesystem tools (e.g., `ls`, `cat`), simplifying debugging and integration with non-ROS tools.
+TopicFS is a ROS2 package that provides a FUSE (Filesystem in Userspace) interface to access ROS2 topics as a virtual filesystem. Each topic is represented as a directory, containing two files: `latest` (the most recent message in JSON format) and `info` (metadata about the topic). This allows developers to interact with ROS2 data using standard filesystem tools (e.g., `ls`, `cat`), simplifying debugging and integration with non-ROS tools.
 
 ## Purpose
 The primary goal of TopicFS is to offer a novel way to access ROS2 topic data, making it easier to:
