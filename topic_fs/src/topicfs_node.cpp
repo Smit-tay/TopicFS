@@ -147,7 +147,7 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
       [this, topic_name](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg) {
         RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
         const auto& buffer = serialized_msg->get_rcl_serialized_message();
-        if (buffer.buffer_length == 0) {
+        if (buffer.buffer_length == 0  || !buffer.buffer) {
           RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s", topic_name.c_str());
           return;
         }

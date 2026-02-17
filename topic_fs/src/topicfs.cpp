@@ -173,20 +173,17 @@ void TopicFS::run_fuse_loop() {
 }
 
 void TopicFS::cleanup() {
+  // First, stop the ROS thread
+  if (ros_thread_.joinable()) {
+    rclcpp::shutdown();
+    ros_thread_.join();
+  }
+
+  // Then cleanup FUSE
   if (fuse_handle_) {
     fuse_unmount(fuse_handle_);
     fuse_destroy(fuse_handle_);
     fuse_handle_ = nullptr;
-  }
-
-  std::string cmd = "fusermount3 -u " + mount_point_;
-  if (system(cmd.c_str()) != 0) {
-    RCLCPP_WARN(ros2_node_->get_logger(), "Failed to unmount %s: %s", mount_point_.c_str(), strerror(errno));
-  }
-
-  if (ros_thread_.joinable()) {
-    rclcpp::shutdown();
-    ros_thread_.join();
   }
 }
 

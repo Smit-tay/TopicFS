@@ -298,14 +298,13 @@ int topicfs_read(const char* path, char* buf, size_t size, off_t offset, struct 
     RCLCPP_DEBUG(ros2_node->get_logger(), "read: reading %s/latest, version=%lu, data_size=%zu, requested_offset=%ld", 
                  original_topic.c_str(), version, data.size(), offset);
 
-    offset = 0;
     if (static_cast<std::string::size_type>(offset) >= data.size()) {
       RCLCPP_DEBUG(ros2_node->get_logger(), "read: offset %ld beyond data size %zu for %s/latest, returning 0", 
                    offset, data.size(), original_topic.c_str());
       return 0;
     }
 
-    size_t len = std::min(size, data.size());
+    size_t len = std::min(size, data.size() - static_cast<size_t>(offset));
     memcpy(buf, data.c_str(), len);
     RCLCPP_DEBUG(ros2_node->get_logger(), "read: read %zu bytes from %s/latest at offset 0", len, original_topic.c_str());
     return len;
@@ -372,8 +371,13 @@ int topicfs_write(const char* path, const char* buf, size_t size, off_t offset, 
     RCLCPP_DEBUG(ros2_node->get_logger(), "write: decoded base64 to %zu bytes", decoded.size());
 
     rclcpp::SerializedMessage serialized_msg(decoded.size());
-    memcpy(serialized_msg.get_rcl_serialized_message().buffer, decoded.data(), decoded.size());
-    serialized_msg.get_rcl_serialized_message().buffer_length = decoded.size();
+    auto& rcl_msg = serialized_msg.get_rcl_serialized_message();
+    if (!rcl_msg.buffer) {
+        RCLCPP_ERROR(ros2_node->get_logger(), "write: failed to allocate serialization buffer");
+        return -ENOMEM;
+    }
+    memcpy(rcl_msg.buffer, decoded.data(), decoded.size());
+    rcl_msg.buffer_length = decoded.size();
 
     if (!ros2_node->publishers_[original_topic]) {
       RCLCPP_ERROR(ros2_node->get_logger(), "write: publisher for %s unexpectedly null", original_topic.c_str());
