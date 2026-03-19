@@ -16,7 +16,7 @@ services:
     tty: true
     stdin_open: true
     volumes:
-      - ./:/topicfs/src:z
+      - /home/jack/dev/smithjack.net:/home/jack/dev/smithjack.net:z
       - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
       TZ: Europe/Berlin

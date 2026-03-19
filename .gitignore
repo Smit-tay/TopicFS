@@ -4,5 +4,4 @@ topic_fs/install/
 build/
 log/
 install/
-*.geany
 compile_commands.json

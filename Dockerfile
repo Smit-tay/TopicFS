@@ -31,7 +31,7 @@ RUN apt-get update && \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /topicfs
+WORKDIR /home/jack/dev/smithjack.net
 
 # Setup user configuration
 # Create or rename group and user, handle existing UID/GID conflicts
@@ -40,15 +40,15 @@ RUN echo "Configuring group with GID=$HOST_GID for $USERNAME" && \
     echo "Configuring user $USERNAME with UID=$HOST_UID, GID=$HOST_GID" && \
     (id -u $HOST_UID >/dev/null 2>&1 && \
      echo "UID $HOST_UID exists, updating user" && \
-     usermod -l $USERNAME -d /home/$USERNAME -m -g $HOST_GID $(id -un $HOST_UID) || \
-     useradd --uid $HOST_UID --gid $HOST_GID -m -s /bin/bash $USERNAME) && \
+     usermod -l $USERNAME -d /home/$USERNAME -m -g $HOST_GID $(id -un $HOST_UID) 2>/dev/null || true) && \
     echo "Configuring sudo and bashrc for $USERNAME" && \
     echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/$USERNAME && \
     chmod 0440 /etc/sudoers.d/$USERNAME && \
     echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc && \
     echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc && \
     echo "Setting ownership of /topicfs to $USERNAME:$HOST_GID" && \
-    chown -R $USERNAME:$HOST_GID /topicfs && \
+    mkdir -p /home/jack/dev/smithjack.net && \
+    chown -R $USERNAME:$HOST_GID /home/jack/dev/smithjack.net && \
     echo "User setup complete: $(id $USERNAME)"
 
 
@@ -85,16 +85,13 @@ RUN sudo apt-get update && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # Install missing ROS 2 dependencies
-COPY . /topicfs/src
-RUN sudo chown -R $USERNAME:$USERNAME /topicfs && \
-    sudo apt-get update && \
-    rosdep update && \
-    rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y && \
-    sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/* && \
-    rm -rf /home/$USERNAME/.ros
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends \
+    ros-jazzy-rosbag2 \
+    && sudo apt-get clean && \
+    sudo rm -rf /var/lib/apt/lists/*
 
 # Set the default shell to bash and the workdir to the source directory
 SHELL [ "/bin/bash", "-c" ]
 ENTRYPOINT []
-WORKDIR /topicfs
+WORKDIR /home/jack/dev/smithjack.net

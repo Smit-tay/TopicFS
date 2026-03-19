@@ -1,0 +1,63 @@
+[editor]
+line_wrapping=false
+line_break_column=125
+auto_continue_multiline=true
+
+[file_prefs]
+final_new_line=true
+ensure_convert_new_lines=true
+strip_trailing_spaces=true
+replace_tabs=true
+
+[indentation]
+indent_width=4
+indent_type=0
+indent_hard_tab_width=8
+detect_indent=false
+detect_indent_width=false
+indent_mode=2
+
+[project]
+name=TopicFS
+base_path=/home/jack/dev/smithjack.net/topicfs
+description=
+file_patterns=
+
+[long line marker]
+long_line_behaviour=2
+long_line_column=125
+
+[files]
+current_page=0
+
+[VTE]
+last_dir=/home/jack
+
+[prjorg]
+expanded_paths=/home/jack/dev/smithjack.net/topicfs/topic_fs/include/topic_fs;/home/jack/dev/smithjack.net/topicfs/topic_fs/src;
+source_patterns=*.c;*.C;*.cpp;*.cxx;*.c++;*.cc;*.m;
+header_patterns=*.h;*.H;*.hpp;*.hxx;*.h++;*.hh;
+ignored_dirs_patterns=.*;CVS;
+ignored_file_patterns=*.o;*.obj;*.a;*.lib;*.so;*.dll;*.lo;*.la;*.class;*.jar;*.pyc;*.mo;*.gmo;
+generate_tag_prefs=0
+show_empty_dirs=true
+external_dirs=
+
+[build-menu]
+NF_00_LB=Build TopicFS
+NF_00_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && source /opt/ros/jazzy/setup.bash && colcon build --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && ln -sf /home/jack/dev/smithjack.net/topicfs/build/topic_fs/compile_commands.json /home/jack/dev/smithjack.net/topicfs/compile_commands.json"\nNF_00_WD=
+NF_00_WD=/home/jack/dev/smithjack.net/topicfs
+NF_01_LB=
+NF_01_CM=
+NF_01_WD=
+NF_02_LB=Clean TopicFS
+NF_02_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && rm -rf build install log"
+NF_02_WD=/home/jack/dev/smithjack.net/topicfs
+NF_03_LB=Lint TopicFS
+NF_03_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && source /opt/ros/jazzy/setup.bash && colcon test --packages-select topic_fs"
+NF_03_WD=/home/jack/dev/smithjack.net/topicfs
+
+[lsp]
+enabled=true
+settings_type=0
+config_file=
