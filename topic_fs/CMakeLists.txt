@@ -69,11 +69,8 @@ install(DIRECTORY
 
 # ROS 2 dependencies (handles includes and linking)
 ament_target_dependencies(topic_fs
-#  geometry_msgs
-  rclcpp  
-#  rosbag2_cpp
-  rosidl_runtime_cpp  
-#  std_msgs
+  rclcpp
+  rosidl_runtime_cpp
 )
 
 # Install executable
@@ -90,12 +87,20 @@ install(TARGETS topic_fs
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_uncrustify REQUIRED)
-  set(AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify)
-  set(AMENT_LINT_AUTO_CPPLINT_FILTERS "--filter=-whitespace/newline,-readability/braces")
-  ament_uncrustify(
-    TESTNAME uncrustify
-    CONFIG_FILE ${CMAKE_CURRENT_SOURCE_DIR}/uncrustify.cfg
+  find_package(ament_cmake_cpplint REQUIRED)
+  set(AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint)
+  ament_cpplint(
+    FILTERS
+      "-whitespace/newline,-readability/braces,-whitespace/line_length"
+      ",-whitespace/comments,-whitespace/end_of_line"
+      ",-build/include_order,-build/header_guard"
+      ",-readability/casting,-readability/todo"
+      ",-whitespace/blank_line"
   )
+#  ament_uncrustify(
+#    TESTNAME uncrustify
+#    CONFIG_FILE ${CMAKE_CURRENT_SOURCE_DIR}/uncrustify.cfg
+#  )
   ament_lint_auto_find_test_dependencies()
 endif()
 

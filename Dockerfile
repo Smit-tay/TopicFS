@@ -17,6 +17,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     bash-completion \
     curl \
+    clangd \
     fuse3 \
     gdb \
     git \
@@ -91,7 +92,7 @@ RUN sudo chown -R $USERNAME:$USERNAME /topicfs && \
     rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y && \
     sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/* && \
-    rm -rf /home/$USERNAME/.ros 
+    rm -rf /home/$USERNAME/.ros
 
 # Set the default shell to bash and the workdir to the source directory
 SHELL [ "/bin/bash", "-c" ]

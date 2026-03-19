@@ -8,21 +8,19 @@ services:
         - HOST_GID=${GID:-1000}
         - USERNAME=${USER:-$(id -un)}
     container_name: topicfs
+    hostname: topicfs-container
+    userns_mode: "keep-id"
     network_mode: "host"
     privileged: true
     command: /bin/bash
     tty: true
     stdin_open: true
     volumes:
-      - ./:/topicfs/src
+      - ./:/topicfs/src:z
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - /dev:/dev
     environment:
+      TZ: Europe/Berlin
       QT_X11_NO_MITSHM: 1
       DISPLAY: $DISPLAY
     cap_add:
       - SYS_NICE
-    ulimits:
-      rtprio: 99
-      rttime: -1
-      memlock: 8428281856
