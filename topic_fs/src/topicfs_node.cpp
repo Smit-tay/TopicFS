@@ -69,6 +69,7 @@ topicfsNode::topicfsNode() : Node("ros2_fuse_node")
 {
   declare_parameter<std::vector<std::string>>("writable_topics", std::vector<std::string>{});
   declare_parameter<int>("notification_interval_ms", 100);
+  declare_parameter<int>("discovery_interval_ms", 1000);
 
   try
   {
@@ -78,6 +79,15 @@ topicfsNode::topicfsNode() : Node("ros2_fuse_node")
     get_parameter("notification_interval_ms", interval_ms);
     notification_interval_ = std::chrono::milliseconds(interval_ms);
     RCLCPP_INFO(this->get_logger(), "Notification interval set to %d ms", interval_ms);
+
+    get_parameter("discovery_interval_ms", discovery_interval_ms_);
+    RCLCPP_INFO(this->get_logger(), "Discovery interval set to %d ms", discovery_interval_ms_);
+    discovery_timer_ = create_wall_timer(
+        std::chrono::milliseconds(discovery_interval_ms_),
+        [this]() {
+                discover_topics();
+            });
+
   }
   catch (const rclcpp::ParameterTypeException& e)
   {

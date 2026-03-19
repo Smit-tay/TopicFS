@@ -75,6 +75,10 @@ private:
   std::string mount_point_;
   std::vector<std::string> writable_topics_;
 
+  // Discovery timer
+  rclcpp::TimerBase::SharedPtr discovery_timer_;
+  int discovery_interval_ms_{1000};
+
   // Notification throttling
   std::mutex notification_mutex_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_notification_;
