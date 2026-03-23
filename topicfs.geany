@@ -28,7 +28,9 @@ long_line_behaviour=2
 long_line_column=125
 
 [files]
-current_page=0
+current_page=1
+FILE_NAME_0=0;C++;0;EUTF-8;0;1;0;%2Fhome%2Fjack%2Fdev%2Fsmithjack.net%2FSwiftRos2%2Fswiftpro_kinematics%2Fsrc%2Fswiftpro_kinematics.cpp;0;4
+FILE_NAME_1=645;C++;0;EUTF-8;0;1;0;%2Fhome%2Fjack%2Fdev%2Fsmithjack.net%2FSwiftRos2%2Fswiftpro_control%2Fsrc%2Fswiftpro_control.cpp;0;4
 
 [VTE]
 last_dir=/home/jack
@@ -44,18 +46,6 @@ show_empty_dirs=true
 external_dirs=
 
 [build-menu]
-NF_00_LB=Build TopicFS
-NF_00_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && source /opt/ros/jazzy/setup.bash && colcon build --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && ln -sf /home/jack/dev/smithjack.net/topicfs/build/topic_fs/compile_commands.json /home/jack/dev/smithjack.net/topicfs/compile_commands.json"\nNF_00_WD=
-NF_00_WD=/home/jack/dev/smithjack.net/topicfs
-NF_01_LB=
-NF_01_CM=
-NF_01_WD=
-NF_02_LB=Clean TopicFS
-NF_02_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && rm -rf build install log"
-NF_02_WD=/home/jack/dev/smithjack.net/topicfs
-NF_03_LB=Lint TopicFS
-NF_03_CM=podman exec topicfs bash -c "cd /home/jack/dev/smithjack.net/topicfs && source /opt/ros/jazzy/setup.bash && colcon test --packages-select topic_fs"
-NF_03_WD=/home/jack/dev/smithjack.net/topicfs
 
 [lsp]
 enabled=true

@@ -1,170 +1,151 @@
 # TopicFS
 <img src="topic_fs/docs/images/repo_icon.png" alt="Repo Icon" width="30%">
 
-TopicFS is a ROS2 package that provides a FUSE (Filesystem in Userspace) interface to access ROS2 topics as a virtual filesystem. Each topic is represented as a directory, containing two files: `latest` (the most recent message in JSON format) and `info` (metadata about the topic). This allows developers to interact with ROS2 data using standard filesystem tools (e.g., `ls`, `cat`), simplifying debugging and integration with non-ROS tools.
+TopicFS is a ROS2 FUSE filesystem interface. It mounts a directory where each 
+active ROS2 topic appears as a subdirectory containing files:
 
-## Purpose
-The primary goal of TopicFS is to offer a novel way to access ROS2 topic data, making it easier to:
-- Inspect topic messages without writing ROS2-specific code.
-- Integrate ROS2 data with scripts or tools that expect file-based interfaces.
-- Debug ROS2 applications by browsing topics as files.
+- `latest` — the most recent message, base64-encoded JSON
+- `info` — topic name and type
+- `command` — present only for writable topics
 
-Currently, TopicFS supports any topic type, although is still under development, so may be unstable.
+This lets any POSIX-compatible tool — shell scripts, web servers, `cat`, `watch` 
+— consume live ROS2 data without knowing anything about ROS2. That's the point.
+
+## Why
+
+ROS2 is powerful but hermetic. Getting data out of it typically means writing 
+ROS2-aware code. TopicFS breaks that wall. If you can read a file, you can read 
+a ROS2 topic.
+
+## Architecture
+
+TopicFS runs in a Podman container alongside your ROS2 nodes. The container 
+mounts your project directory at the same path as the host, so there's no path 
+remapping required.
+
+Cross-machine ROS2 discovery uses standard mDNS via avahi. No discovery server, 
+no hardcoded IPs.
 
 ## Prerequisites
-- **Operating System**: Ubuntu 24.04 (Noble)
-- **ROS2 Distribution**: Jazzy Jalisco
-- **Docker**: Required for the provided containerized setup
-- **Dependencies**:
-  - `fuse3`
-  - `libfuse-dev` (minimum FUSE 2.9.9)
-  - `nlohmann-json3-dev`
-  - `ros-jazzy-demo-nodes-cpp` (for the chatter example)
 
-## Installation
-TopicFS is designed to run in a Docker container to ensure a consistent environment.<br>
-If run outside a container, you may need to install the following packages:
-  - fuse
-  - libfuse-dev
-  - nlohmann-json3-dev
+- Ubuntu 24.04 (Noble) — the container base image
+- ROS2 Jazzy Jalisco
+- Podman and podman-compose
+- `avahi-daemon` running on all machines that will run ROS2 nodes
 
-Follow these steps to set up the project.
+### avahi requirement
 
-### 1. Clone the Repository
+ROS2's default middleware (Fast DDS) uses multicast for node discovery. avahi 
+provides the mDNS stack that makes this work across machines on the same LAN. 
+Without it, nodes on different machines cannot find each other — even on the 
+same subnet.
 ```bash
-git clone <repository-url> topicfs
-cd topicfs
+# Fedora
+sudo dnf install -y avahi
+sudo systemctl enable --now avahi-daemon
+
+# Ubuntu/Debian
+sudo apt-get install -y avahi-daemon
+sudo systemctl enable --now avahi-daemon
 ```
 
-### 2. Set Up the Docker Environment
-The project includes a `Dockerfile` and `docker-compose.yml` to create a ROS2 Jazzy container.
+This is only required for cross-machine setups. Single-machine use works without it.
 
-1. **Create an `.env` File**:
-   ```bash
-   echo -e "UID=$(id -u)\nGID=$(id -g)\nUSERNAME=$(whoami)" > .env
-   ```
+## Setup
 
-2. **Build and Start the Container**:
-   ```bash
-   docker-compose up -d --build
-   ```
-
-3. **Enter the Container**:
-   ```bash
-   docker exec -it topicfs /bin/bash
-   ```
-
-### 3. Build the Package
-Inside the container:
+### 1. Clone
 ```bash
-cd /topicfs
-colcon build
-source install/setup.bash
+git clone https://github.com/Smit-tay/TopicFS.git
+cd TopicFS
+```
+
+### 2. Create environment file
+```bash
+echo -e "UID=$(id -u)\nGID=$(id -g)\nUSERNAME=$(whoami)" > .env
+```
+
+### 3. Build and start the container
+```bash
+podman-compose up -d --build
+```
+
+### 4. Build the package
+```bash
+podman exec topicfs bash -c "cd /home/$(whoami)/dev/smithjack.net/topicfs && \
+    source /opt/ros/jazzy/setup.bash && \
+    colcon build"
 ```
 
 ## Usage
-TopicFS mounts a FUSE filesystem at a specified mount point (e.g., `/mnt/topicfs`), where ROS2 topics appear as directories.
 
-### Running the Chatter Example
-This example uses the `demo_nodes_cpp` package to publish a `std_msgs/String` topic (`/chatter`) and mounts the FUSE filesystem to access it.
+TopicFS mounts a FUSE filesystem at a configured mount point. Each active ROS2 
+topic appears as a directory.
 
-1. **Run the Chatter Publisher**:
-   In one terminal (inside the container):
-   ```bash
-   source /opt/ros/jazzy/setup.bash
-   ros2 run demo_nodes_cpp talker
-   ```
+### Basic example
 
-2. **Run TopicFS**:
-   In another terminal (inside the container):
-   ```bash
-   cd /topicfs
-   source install/setup.bash
-   install/topic_fs/lib/topic_fs/topic_fs /mnt/topicfs
-   ```
-
-3. **Browse the Filesystem**:
-   In a third terminal:
-   ```bash
-   ls /mnt/topicfs
-   ```
-   - Should show: `chatter`
-   ```bash
-   ls /mnt/topicfs/chatter
-   ```
-   - Should show: `info latest`
-   ```bash
-   cat /mnt/topicfs/chatter/latest
-   ```
-   - Should show: `{"data": "Hello, world! ..."}`
-   ```bash
-   cat /mnt/topicfs/chatter/info
-   ```
-   - Should show: `Topic: chatter\nType: std_msgs/String\n`
-
-4. **Shut Down**:
-   - Press `Ctrl+C` in the `topic_fs` terminal.
-   - Unmount the filesystem:
-     ```bash
-     sudo fusermount -u /mnt/topicfs
-     ```
-   - Stop the publisher:
-     ```bash
-     pkill -f talker
-     ```
-
-### Debugging
-To run with FUSE debug output:
+With a ROS2 talker running:
 ```bash
-install/topic_fs/lib/topic_fs/topic_fs /mnt/topicfs -d
+ros2 run demo_nodes_cpp talker
 ```
+
+Run TopicFS:
+```bash
+source install/setup.bash
+install/topic_fs/lib/topic_fs/topic_fs ~/fuse_mount
+```
+
+Browse topics:
+```bash
+ls ~/fuse_mount/
+cat ~/fuse_mount/chatter/latest
+cat ~/fuse_mount/chatter/info
+```
+
+### Example with SwiftRos2
+ 
+SwiftRos2 is a ROS2 controller for uArm SwitfPro parallel linkage robotic arm
+
+The primary use case is monitoring a live robotic arm. With SwiftRos2 running 
+on a connected machine:
+```bash
+cat ~/fuse_mount/swiftpro/position/latest
+watch cat ~/fuse_mount/joint_states/latest
+```
+
+See [SwiftRos2](https://github.com/Smit-tay/SwiftRos2) for the hardware node.
+
+## Network Requirements
+
+See the avahi section above. `ROS_DOMAIN_ID=11` is used across this project.
 
 ## Filesystem Structure
-The FUSE filesystem is structured as follows:
-- `/`: Root directory containing topic directories.
-- `/<topic>`: Directory for each `std_msgs/String` topic (e.g., `/chatter`).
-  - `latest`: File with the latest message in JSON format.
-  - `info`: File with metadata (`Topic: <topic>\nType: std_msgs/String\n`).
-
-Example:
 ```
-/mnt/topicfs/
-├── chatter
-│   ├── latest
-│   ├── info
+<mount_point>/
+├── <topic_name>/
+│   ├── latest       # most recent message, base64 JSON
+│   ├── info         # topic name and type
+│   └── command      # writable topics only
 ```
 
-## Quality Assurance
-- **Code Style**: Follows (modified) Stroustrup C++ style guidelines,<br>
-                  enforced with `ament_cmake_clang_format`.  (see `uncrustify.cfg`)
-- **Linting**: Uses `ament_lint_auto` and `ament_lint_common` for static analysis.
-- **Testing**: Planned for future releases (e.g., `ament_cmake_gtest` for unit tests).
-- **Build System**: Uses `ament_cmake` for ROS2 integration.
+## Status
 
-## Contributing
-Contributions are welcome! Please follow these steps:
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/YourFeature`).
-3. Commit changes (`git commit -m "Add YourFeature"`).
-4. Push to the branch (`git push origin feature/YourFeature`).
-5. Open a pull request.
+Active development. Core functionality works. Dynamic topic discovery is 
+implemented — new topics appearing after startup are picked up automatically.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+Known limitations:
+- URDF parallel linkage cannot be accurately described (SwiftRos2 kinematics 
+  node partially compensates)
+- Unit tests not yet implemented
 
-## Code of Conduct
-This project adheres to the [ROS2 Code of Conduct](https://www.ros.org/conduct.html). Please ensure all interactions are respectful and inclusive.
+## IDE Setup
+
+See [ide/README.md](ide/README.md) for Geany configuration with clangd LSP.
+VSCode configuration is in [ide/vscode/](ide/vscode/).
 
 ## License
-TopicFS is licensed under the MIT license See [LICENSE](LICENSE) for details.
 
-## Contact
-For questions or feedback, please open an issue on the repository or contact the maintainer via GitHub:
+MIT. See [LICENSE](LICENSE).
 
-## Acknowledgments
-- Inspired by the need for simple ROS2 data access.
-- Built with [libfuse](https://github.com/libfuse/libfuse) and [nlohmann/json](https://github.com/nlohmann/json).
-- Thanks to the ROS2 community for tools and support.
+## Author
 
-## Topic FS Utility
-Copyright (c) 2025 Jack Sidman Smith<br>
-Licensed under the MIT License.
+Jack Sidman Smith — [smithjack.net](https://smithjack.net)
