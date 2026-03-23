@@ -20,7 +20,6 @@
 
 #include "topic_fs/topicfs.hpp"
 #include <iostream>
-#include <thread>
 
 int main(int argc, char* argv[]) {
   try {

@@ -45,12 +45,13 @@ private:
   std::string mount_point_;
   std::thread ros_thread_;
   unsigned int fuse_threads_{2};
-  bool initialize_ros(int argc, char* argv[]);
-  bool setup_mount_point(int argc, char* argv[]);
-  bool setup_fuse_threads(int argc, char* argv[]);
-  bool initialize_fuse();
-  void run_fuse_loop();
+  
   void cleanup();
+  bool initialize_fuse();
+  bool initialize_ros(int argc, char* argv[]);
+  void run_fuse_loop();
+  bool setup_fuse_threads(int argc, char* argv[]);
+  bool setup_mount_point(int argc, char* argv[]);
 };
 
 #endif // TOPICFS_HPP

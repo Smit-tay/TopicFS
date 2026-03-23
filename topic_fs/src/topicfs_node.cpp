@@ -117,8 +117,6 @@ topicfsNode::topicfsNode() : Node("ros2_fuse_node")
   {
     RCLCPP_INFO(this->get_logger(), "  - %s", topic.c_str());
   }
-
-  discover_topics();
 }
 
 // -----------------------------------------------------------------------------
@@ -324,9 +322,23 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
 void topicfsNode::discover_topics()
 {
   auto topic_names_and_types = get_topic_names_and_types();
+  RCLCPP_DEBUG(this->get_logger(), "discover_topics: found %zu topics",
+              topic_names_and_types.size());
+
+  // Skip internal ROS2 infrastructure topics
+  static const std::set<std::string> ignored_topics = {
+    "/rosout",
+    "/parameter_events"
+  };
+             
   std::set<std::string> seen_topics;
   for (const auto& [topic, types] : topic_names_and_types)
   {
+      // SKip ignored topics
+    if (ignored_topics.count(topic))
+    {
+      continue;
+    }
     if (!types.empty() && seen_topics.insert(topic).second)
     {
       {

@@ -359,6 +359,7 @@ int topicfs_poll(
   const char* path, struct fuse_file_info* fi,
   struct fuse_pollhandle* ph, unsigned* reventsp)
 {
+     
   (void)fi;
   *reventsp = 0;
 
@@ -377,7 +378,7 @@ int topicfs_poll(
 
   if (file != "latest")
   {
-    // Only latest files are pollable
+    // Non-pollable files — signal data always available so callers don't block
     *reventsp = POLLIN;
     return 0;
   }
@@ -401,6 +402,9 @@ int topicfs_poll(
   RCLCPP_DEBUG(ros2_node->get_logger(),
                "poll: registered waiter for %s, data_ready=%s",
                original_topic.c_str(), msg ? "yes" : "no");
+    RCLCPP_INFO(ros2_node->get_logger(),
+              "poll: called for %s file=%s ph=%s",
+              original_topic.c_str(), file.c_str(), ph ? "valid" : "null");               
   return 0;
 }
 
