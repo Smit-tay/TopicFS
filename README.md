@@ -1,44 +1,84 @@
 # TopicFS
+
 <img src="topic_fs/docs/images/repo_icon.png" alt="Repo Icon" width="30%">
 
-TopicFS is a ROS2 FUSE filesystem interface. It mounts a directory where each 
-active ROS2 topic appears as a subdirectory containing files:
+> *A ROS2 FUSE filesystem. Because apparently "just read a file" was too simple for the robotics world.*
 
-- `latest` — the most recent message, base64-encoded JSON
-- `info` — topic name and type
-- `command` — present only for writable topics
+TopicFS mounts a directory where every active ROS2 topic appears as a subdirectory. 
+Inside each subdirectory: plain files. No ROS2 client libraries. No message type 
+definitions. No colcon. No XML. Just files.
 
-This lets any POSIX-compatible tool — shell scripts, web servers, `cat`, `watch` 
-— consume live ROS2 data without knowing anything about ROS2. That's the point.
+```
+cat ~/fuse_mount/swiftpro/position/latest
+```
+
+That's it. That's the whole pitch.
+
+---
+
+## What You Get
+
+Each topic directory contains:
+
+| File | Contents |
+|------|----------|
+| `latest` | Most recent message, base64-encoded JSON |
+| `info` | Topic name and type |
+| `command` | Present only on writable topics |
+
+New topics appearing after startup are picked up automatically. You don't have to 
+restart anything.
+
+---
 
 ## Why
 
-ROS2 is powerful but hermetic. Getting data out of it typically means writing 
-ROS2-aware code. TopicFS breaks that wall. If you can read a file, you can read 
-a ROS2 topic.
+ROS2 is a serious piece of engineering and also, if you've worked with it for more 
+than a week, a serious source of friction. Getting data *out* of a running ROS2 
+system typically means writing ROS2-aware code in a ROS2 workspace with ROS2 
+dependencies and a ROS2 build system and—
+
+TopicFS breaks that wall. Web servers, shell scripts, `cat`, `watch`, Python with 
+no dependencies, a Bash one-liner on a machine that doesn't even have ROS2 installed: 
+if it can read a file, it can read a ROS2 topic.
+
+---
 
 ## Architecture
 
-TopicFS runs in a Podman container alongside your ROS2 nodes. The container 
-mounts your project directory at the same path as the host, so there's no path 
-remapping required.
+TopicFS runs in a Podman container (almost identical to Docker) alongside your ROS2 nodes. The container mounts 
+your project directory at the same path as the host — no path remapping, no symlink 
+gymnastics.
 
-Cross-machine ROS2 discovery uses standard mDNS via avahi. No discovery server, 
-no hardcoded IPs.
+Cross-machine ROS2 discovery works via standard mDNS through `avahi-daemon`. No 
+discovery server, no hardcoded IPs, no proprietary middleware configuration.
+
+The FUSE filesystem implements the `poll(2)` operation, so applications using 
+`poll()` or `select()` receive data-ready notifications directly when new messages 
+arrive. `tail -f` won't work — it uses inotify, which the Linux kernel does not 
+generate for FUSE filesystems. This is a kernel architecture constraint, not a 
+TopicFS bug. Use `watch` instead:
+
+```bash
+watch -n 0.1 cat ~/fuse_mount/swiftpro/position/latest
+```
+
+---
 
 ## Prerequisites
 
 - Ubuntu 24.04 (Noble) — the container base image
 - ROS2 Jazzy Jalisco
 - Podman and podman-compose
-- `avahi-daemon` running on all machines that will run ROS2 nodes
+- `avahi-daemon` running on all machines participating in ROS2 discovery
+- FUSE 3.x (`fuse3` package)
 
-### avahi requirement
+### avahi
 
 ROS2's default middleware (Fast DDS) uses multicast for node discovery. avahi 
-provides the mDNS stack that makes this work across machines on the same LAN. 
-Without it, nodes on different machines cannot find each other — even on the 
-same subnet.
+provides the mDNS stack that makes cross-machine discovery work. Without it, nodes 
+on different machines cannot find each other — even on the same subnet.
+
 ```bash
 # Fedora
 sudo dnf install -y avahi
@@ -49,98 +89,184 @@ sudo apt-get install -y avahi-daemon
 sudo systemctl enable --now avahi-daemon
 ```
 
-This is only required for cross-machine setups. Single-machine use works without it.
+Single-machine setups don't need this.
+
+---
 
 ## Setup
 
 ### 1. Clone
+
 ```bash
 git clone https://github.com/Smit-tay/TopicFS.git
 cd TopicFS
 ```
 
-### 2. Create environment file
+### 2. Create the environment file
+
 ```bash
 echo -e "UID=$(id -u)\nGID=$(id -g)\nUSERNAME=$(whoami)" > .env
 ```
 
 ### 3. Build and start the container
+
 ```bash
 podman-compose up -d --build
 ```
 
-### 4. Build the package
+### 4. Build the package inside the container
+
 ```bash
-podman exec topicfs bash -c "cd /home/$(whoami)/dev/smithjack.net/topicfs && \
+podman exec topicfs bash -c "
+    cd /home/$(whoami)/dev/smithjack.net/topicfs && \
     source /opt/ros/jazzy/setup.bash && \
-    colcon build"
+    colcon build
+"
 ```
 
-## Usage
+---
 
-TopicFS mounts a FUSE filesystem at a configured mount point. Each active ROS2 
-topic appears as a directory.
+## Running
 
-### Basic example
+### Basic smoke test
 
-With a ROS2 talker running:
+Terminal 1 — run a talker:
 ```bash
 ros2 run demo_nodes_cpp talker
 ```
 
-Run TopicFS:
+Terminal 2 — run TopicFS inside the container:
 ```bash
 source install/setup.bash
-install/topic_fs/lib/topic_fs/topic_fs ~/fuse_mount
+ros2 run topic_fs topic_fs
 ```
 
-Browse topics:
+Terminal 3 — read it like a file, because it is one:
 ```bash
-ls ~/fuse_mount/
 cat ~/fuse_mount/chatter/latest
 cat ~/fuse_mount/chatter/info
+watch -n 0.1 cat ~/fuse_mount/chatter/latest
 ```
 
-### Example with SwiftRos2
- 
-SwiftRos2 is a ROS2 controller for uArm SwitfPro parallel linkage robotic arm
+### Parameters
 
-The primary use case is monitoring a live robotic arm. With SwiftRos2 running 
-on a connected machine:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `mount_point:=` | `~/fuse_mount` | Where to mount the filesystem |
+| `fuse_threads:=` | `max(2, nproc/2)` | FUSE worker threads. Minimum 2 required for poll support |
+| `notification_interval_ms:=` | `100` | Minimum ms between cache invalidation events per topic |
+| `discovery_interval_ms:=` | `1000` | How often to scan for new topics |
+| `writable_topics:=` | `[]` | Topics to expose as writable via `command` file |
+
 ```bash
-cat ~/fuse_mount/swiftpro/position/latest
-watch cat ~/fuse_mount/joint_states/latest
+ros2 run topic_fs topic_fs \
+    mount_point:=/tmp/ros_topics \
+    fuse_threads:=4 \
+    notification_interval_ms:=50
 ```
 
-See [SwiftRos2](https://github.com/Smit-tay/SwiftRos2) for the hardware node.
+### With a live robotics stack
 
-## Network Requirements
+The reason TopicFS exists.
 
-See the avahi section above. `ROS_DOMAIN_ID=11` is used across this project.
+If you have a ROS2 hardware node running — a robotic 
+arm, a sensor array, a mobile base, anything publishing topics — TopicFS exposes 
+all of it as a filesystem the moment it connects. No code changes to the hardware 
+node. No new dependencies. It just appears.
+
+[SwiftRos2](https://github.com/Smit-tay/SwiftRos2) is the reference integration: 
+a ROS2 hardware abstraction layer for the UFactory UArm Swift Pro, publishing arm 
+position, joint states, pump status, and connection state as topics. With it 
+running on any reachable machine (`ROS_DOMAIN_ID=11`):
+
+```bash
+# Current arm position
+cat ~/fuse_mount/swiftpro/position/latest
+
+# Joint states, updating continuously
+watch -n 0.1 cat ~/fuse_mount/joint_states/latest
+
+# Topic metadata
+cat ~/fuse_mount/swiftpro/connected/info
+```
+
+---
 
 ## Filesystem Structure
+
 ```
 <mount_point>/
-├── <topic_name>/
-│   ├── latest       # most recent message, base64 JSON
-│   ├── info         # topic name and type
-│   └── command      # writable topics only
+├── chatter/
+│   ├── latest       ← most recent message, base64 JSON
+│   └── info         ← topic name and type
+├── swiftpro/
+│   ├── position/
+│   │   ├── latest
+│   │   └── info
+│   ├── connected/
+│   │   ├── latest
+│   │   └── info
+│   └── pump_status/
+│       ├── latest
+│       └── info
+└── some_writable_topic/
+    ├── latest
+    ├── info
+    └── command       ← writable topics only
 ```
 
-## Status
+---
 
-Active development. Core functionality works. Dynamic topic discovery is 
-implemented — new topics appearing after startup are picked up automatically.
+## Network Setup
 
-Known limitations:
-- URDF parallel linkage cannot be accurately described (SwiftRos2 kinematics 
-  node partially compensates)
-- Unit tests not yet implemented
+`ROS_DOMAIN_ID=11` is used across this project. Set it consistently on all nodes:
+
+```bash
+export ROS_DOMAIN_ID=11
+```
+
+The TopicFS container sets this automatically. The SwiftRos2 container requires 
+it explicitly:
+
+```bash
+podman run -e ROS_DOMAIN_ID=11 ...
+```
+
+Both machines must have `avahi-daemon` running for cross-machine discovery. If 
+topics from remote nodes aren't appearing, that's the first thing to check.
+
+---
+
+## Known Limitations
+
+- `tail -f` does not work on FUSE filesystems. Use `watch -n 0.1 cat` instead.
+  This is a kernel inotify/FUSE architecture issue and is not fixable in userspace.
+- Unit tests not yet implemented.
+- The `command` file interface assumes atomic writes. Don't pipe large messages 
+  in chunks and expect it to work.
+
+---
 
 ## IDE Setup
 
-See [ide/README.md](ide/README.md) for Geany configuration with clangd LSP.
+See [ide/README.md](ide/README.md) for Geany + clangd LSP configuration.  
 VSCode configuration is in [ide/vscode/](ide/vscode/).
+
+---
+
+## Status
+
+Active development. Core functionality works:
+
+- FUSE filesystem mount/unmount with clean signal handling
+- Dynamic topic discovery — new topics picked up without restart
+- Generic subscription to any topic type
+- `poll(2)` / `select(2)` support for data-ready notification
+- Writable topic support via `command` file
+- Cross-machine ROS2 discovery via avahi/mDNS
+- Configurable FUSE thread count with hardware-aware defaults
+
+---
 
 ## License
 

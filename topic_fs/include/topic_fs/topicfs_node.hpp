@@ -53,6 +53,10 @@ public:
   bool has_publisher(const std::string& topic);
   bool publish_message(const std::string& topic, rclcpp::SerializedMessage& msg);
 
+  // Accessors - poll handles
+  void store_poll_handle(const std::string& topic, fuse_pollhandle* ph);
+  fuse_pollhandle* take_poll_handle(const std::string& topic);
+
   // Configuration
   void set_fuse_handle(fuse* handle);
   void set_mount_point(const std::string& mount_point);
@@ -68,6 +72,10 @@ private:
   std::map<std::string, std::string> topic_types_;
   std::unordered_map<std::string, std::string> latest_messages_;
   std::unordered_map<std::string, uint64_t> message_versions_;
+
+  // Poll handles - one per topic, consumed on delivery
+  std::mutex poll_mutex_;
+  std::unordered_map<std::string, fuse_pollhandle*> poll_handles_;
 
   // Node state
   fuse* fuse_handle_{nullptr};

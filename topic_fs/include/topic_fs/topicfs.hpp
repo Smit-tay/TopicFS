@@ -20,13 +20,16 @@
 
 #ifndef TOPICFS_HPP
 #define TOPICFS_HPP
-#include "topicfs_node.hpp"
 
-// #define FUSE_USE_VERSION 31  // required here because of member: struct fuse* fuse_handle_;
-#include <fuse3/fuse.h>
 #include <memory>
 #include <string>
 #include <thread>
+
+// #define FUSE_USE_VERSION 312
+#include <fuse3/fuse.h>
+#include <fuse3/fuse_common.h>
+
+#include "topicfs_node.hpp"
 
 class TopicFS {
 public:
@@ -41,8 +44,10 @@ private:
   struct fuse* fuse_handle_;
   std::string mount_point_;
   std::thread ros_thread_;
+  unsigned int fuse_threads_{2};
   bool initialize_ros(int argc, char* argv[]);
   bool setup_mount_point(int argc, char* argv[]);
+  bool setup_fuse_threads(int argc, char* argv[]);
   bool initialize_fuse();
   void run_fuse_loop();
   void cleanup();

@@ -330,6 +330,9 @@ int topicfs_open(const char* path, struct fuse_file_info* fi)
                      "open: %s/%s is read-only", original_topic.c_str(), file.c_str());
         return -EACCES;
       }
+      // Enable direct_io so each read() call hits the FUSE handler rather than
+      // the kernel page cache. Required for poll() to observe fresh data.
+      fi->direct_io = 1;
       RCLCPP_INFO(ros2_node->get_logger(),
                   "open: opened %s/%s for reading", original_topic.c_str(), file.c_str());
       return 0;
@@ -350,6 +353,55 @@ int topicfs_open(const char* path, struct fuse_file_info* fi)
 
   RCLCPP_ERROR(ros2_node->get_logger(), "open: path %s not found", spath.c_str());
   return -ENOENT;
+}
+
+int topicfs_poll(
+  const char* path, struct fuse_file_info* fi,
+  struct fuse_pollhandle* ph, unsigned* reventsp)
+{
+  (void)fi;
+  *reventsp = 0;
+
+  auto* topicfs = static_cast<TopicFS*>(fuse_get_context()->private_data);
+  auto ros2_node = topicfs->get_ros2_node();
+
+  std::string spath(path);
+  size_t pos = spath.rfind('/');
+  if (pos == std::string::npos || pos == 0)
+  {
+    return -ENOENT;
+  }
+
+  std::string topic = spath.substr(1, pos - 1);
+  std::string file = spath.substr(pos + 1);
+
+  if (file != "latest")
+  {
+    // Only latest files are pollable
+    *reventsp = POLLIN;
+    return 0;
+  }
+
+  std::string original_topic = "/" + topic;
+
+  // If we have a message, data is immediately available
+  auto msg = ros2_node->get_latest_message(original_topic);
+  if (msg)
+  {
+    *reventsp = POLLIN;
+  }
+
+  // Store the poll handle so notify_file_change can wake this waiter.
+  // FUSE transfers ownership of ph to us — we are responsible for destroying it.
+  if (ph)
+  {
+    ros2_node->store_poll_handle(original_topic, ph);
+  }
+
+  RCLCPP_DEBUG(ros2_node->get_logger(),
+               "poll: registered waiter for %s, data_ready=%s",
+               original_topic.c_str(), msg ? "yes" : "no");
+  return 0;
 }
 
 int topicfs_read(
@@ -581,12 +633,13 @@ void list_fuse_filesystem(rclcpp::Logger logger)
 // FUSE operations initialisation
 // -----------------------------------------------------------------------------
 
-void init_fuse_operations(struct fuse_operations& topicfs_oper)
+void init_fuse_operations(struct fuse_operations& ops)
 {
-  memset(&topicfs_oper, 0, sizeof(struct fuse_operations));
-  topicfs_oper.getattr = topicfs_getattr;
-  topicfs_oper.readdir = topicfs_readdir;
-  topicfs_oper.open = topicfs_open;
-  topicfs_oper.read = topicfs_read;
-  topicfs_oper.write = topicfs_write;
+  memset(&ops, 0, sizeof(struct fuse_operations));
+  ops.getattr = topicfs_getattr;
+  ops.readdir = topicfs_readdir;
+  ops.open    = topicfs_open;
+  ops.poll    = topicfs_poll;
+  ops.read    = topicfs_read;
+  ops.write   = topicfs_write;
 }

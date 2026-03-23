@@ -54,7 +54,8 @@ target_link_libraries(topic_fs
 # Specify FUSE compiler flags
 target_compile_options(topic_fs PRIVATE ${FUSE_CFLAGS_OTHER})
 
-target_compile_definitions(topic_fs PRIVATE FUSE_USE_VERSION=31)
+# In CMakeLists.txt, inside the target setup for topic_fs
+target_compile_definitions(topic_fs PRIVATE FUSE_USE_VERSION=312)
 
 install(TARGETS
   topic_fs

@@ -197,6 +197,35 @@ bool topicfsNode::publish_message(const std::string& topic, rclcpp::SerializedMe
 }
 
 // -----------------------------------------------------------------------------
+// Public accessors - poll handles
+// -----------------------------------------------------------------------------
+
+void topicfsNode::store_poll_handle(const std::string& topic, fuse_pollhandle* ph)
+{
+  std::lock_guard<std::mutex> lock(poll_mutex_);
+  auto it = poll_handles_.find(topic);
+  if (it != poll_handles_.end() && it->second)
+  {
+    // Destroy any previously stored handle that was never consumed
+    fuse_pollhandle_destroy(it->second);
+  }
+  poll_handles_[topic] = ph;
+}
+
+fuse_pollhandle* topicfsNode::take_poll_handle(const std::string& topic)
+{
+  std::lock_guard<std::mutex> lock(poll_mutex_);
+  auto it = poll_handles_.find(topic);
+  if (it == poll_handles_.end())
+  {
+    return nullptr;
+  }
+  fuse_pollhandle* ph = it->second;
+  it->second = nullptr;
+  return ph;
+}
+
+// -----------------------------------------------------------------------------
 // Configuration setters
 // -----------------------------------------------------------------------------
 
@@ -300,6 +329,13 @@ void topicfsNode::discover_topics()
   {
     if (!types.empty() && seen_topics.insert(topic).second)
     {
+      {
+        std::lock_guard<std::mutex> lock(messages_mutex_);
+        if (subscriptions_.count(topic))
+        {
+          continue;
+        }
+      }
       RCLCPP_INFO(this->get_logger(), "Found topic: %s, type: %s",
                   topic.c_str(), types[0].c_str());
       subscribe_to_topic(topic, types[0]);
@@ -320,19 +356,22 @@ void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle
   }
 
   auto now = std::chrono::steady_clock::now();
-  std::lock_guard<std::mutex> lock(notification_mutex_);
-  auto& last_time = last_notification_[topic];
-  if (now - last_time < notification_interval_)
   {
-    RCLCPP_DEBUG(this->get_logger(), "notify: throttled for %s", topic.c_str());
-    return;
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    auto& last_time = last_notification_[topic];
+    if (now - last_time < notification_interval_)
+    {
+      RCLCPP_DEBUG(this->get_logger(), "notify: throttled for %s", topic.c_str());
+      return;
+    }
+    last_time = now;
   }
-  last_time = now;
 
+  // Invalidate kernel page cache for the latest file
   struct fuse_session* session = fuse_get_session(fuse_handle);
   ino_t st_ino = 1 + std::hash<std::string>{}("/" + topic.substr(1) + "/latest");
   int ret = fuse_lowlevel_notify_inval_inode(session, st_ino, 0, 0);
-  if (ret != 0)
+  if (ret != 0 && ret != -ENOENT)
   {
     RCLCPP_ERROR(this->get_logger(),
                  "notify: failed to invalidate inode for %s: %s (errno=%d)",
@@ -340,7 +379,15 @@ void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle
   }
   else
   {
-    RCLCPP_DEBUG(this->get_logger(), "notify: successfully invalidated inode for %s",
-                 topic.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "notify: invalidated inode for %s", topic.c_str());
+  }
+
+  // Wake any tail -f / poll() waiter on this topic
+  fuse_pollhandle* ph = take_poll_handle(topic);
+  if (ph)
+  {
+    fuse_notify_poll(ph);
+    fuse_pollhandle_destroy(ph);
+    RCLCPP_DEBUG(this->get_logger(), "notify: woke poll waiter for %s", topic.c_str());
   }
 }
