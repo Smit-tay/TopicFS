@@ -5,7 +5,9 @@ FROM ros:jazzy-ros-base
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    ROS_DISTRO=jazzy
+    ROS_DISTRO=jazzy \
+    ROS_DOMAIN_ID=11 \
+    TZ=Europe/Berlin
 
 # Define build arguments for host UID, GID, and username with defaults
 ARG HOST_UID=1000
@@ -49,8 +51,9 @@ RUN echo "Configuring group with GID=$HOST_GID for $USERNAME" && \
     echo "Setting ownership of /topicfs to $USERNAME:$HOST_GID" && \
     mkdir -p /home/jack/dev/smithjack.net && \
     chown -R $USERNAME:$HOST_GID /home/jack/dev/smithjack.net && \
+    mkdir -p /home/$USERNAME/.ros/log && \
+    chown -R $USERNAME:$HOST_GID /home/$USERNAME && \
     echo "User setup complete: $(id $USERNAME)"
-
 
 USER $USERNAME
 
@@ -75,11 +78,16 @@ RUN sudo apt-get update && \
     ros-jazzy-moveit-ros-visualization \
     ros-jazzy-moveit-simple-controller-manager \
     ros-jazzy-realtime-tools \
+    ros-jazzy-robot-state-publisher \
     ros-jazzy-ros-gz \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
     ros-jazzy-ros2-control-test-assets \
     ros-jazzy-ros2controlcli \
     ros-jazzy-rviz2 \
     ros-jazzy-sdformat-urdf \
+    ros-jazzy-tf2 \
+    ros-jazzy-tf2-ros \
     ros-jazzy-xacro \
     && sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/*
