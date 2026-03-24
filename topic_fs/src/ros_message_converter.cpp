@@ -190,17 +190,16 @@ const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
   // Build the shared library name
   // e.g. geometry_msgs/msg/Point -> libgeometry_msgs__rosidl_typesupport_cpp.so
   std::string lib_name = "lib" + package + "__rosidl_typesupport_cpp.so";
+  // Build the function symbol name
+  // e.g. rosidl_typesupport_cpp__get_message_type_support_handle__geometry_msgs__msg__Point
+  std::string symbol = "rosidl_typesupport_cpp__get_message_type_support_handle__" +
+    package + "__" + subfolder + "__" + type_name;
 
   void * handle = dlopen(lib_name.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!handle)
   {
     return nullptr;
   }
-
-  // Build the function symbol name
-  // e.g. rosidl_typesupport_cpp__get_message_type_support_handle__geometry_msgs__msg__Point
-  std::string symbol = "rosidl_typesupport_cpp__get_message_type_support_handle__" +
-    package + "__" + subfolder + "__" + type_name;
 
   using GetTypeSupportFn = const rosidl_message_type_support_t * (*)();
   auto fn = reinterpret_cast<GetTypeSupportFn>(dlsym(handle, symbol.c_str()));

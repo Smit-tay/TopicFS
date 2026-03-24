@@ -49,21 +49,11 @@ public:
   static std::optional<rclcpp::SerializedMessage> from_json(
     const std::string & type_string,
     const nlohmann::json & json);
-
-private:
-  // Load type support for a given type string via dlopen.
+    
+      // Load type support for a given type string via dlopen.
   // Results are cached to avoid repeated dlopen calls.
   static const rosidl_message_type_support_t * get_type_support(
     const std::string & type_string);
-
-  // Parse type string into package, subfolder, type components.
-  // e.g. "geometry_msgs/msg/Point" -> {"geometry_msgs", "msg", "Point"}
-  static bool parse_type_string(
-    const std::string & type_string,
-    std::string & package,
-    std::string & subfolder,
-    std::string & type_name);
-
   // Recursively deserialize raw memory to JSON using member introspection.
   static nlohmann::json members_to_json(
     const rosidl_typesupport_introspection_cpp::MessageMembers * members,
@@ -74,6 +64,18 @@ private:
     const rosidl_typesupport_introspection_cpp::MessageMembers * members,
     const nlohmann::json & json,
     uint8_t * data);
+
+private:
+
+  // Parse type string into package, subfolder, type components.
+  // e.g. "geometry_msgs/msg/Point" -> {"geometry_msgs", "msg", "Point"}
+  static bool parse_type_string(
+    const std::string & type_string,
+    std::string & package,
+    std::string & subfolder,
+    std::string & type_name);
+
+
 
   // Cache of loaded type supports keyed by type string
   static std::unordered_map<std::string, const rosidl_message_type_support_t *> type_support_cache_;

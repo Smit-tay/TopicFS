@@ -23,6 +23,7 @@
 
 // Standard library
 #include <chrono>
+#include <future>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -59,6 +60,12 @@ public:
   void store_poll_handle(const std::string& topic, fuse_pollhandle* ph);
   fuse_pollhandle* take_poll_handle(const std::string& topic);
 
+  // Accessors - services
+  std::vector<std::string> get_services();
+  bool has_service(const std::string& service);
+  std::string call_service(const std::string& service, const nlohmann::json& request);
+  std::optional<std::string> get_last_response(const std::string& service);
+
   // Configuration
   void set_fuse_handle(fuse* handle);
   void set_mount_point(const std::string& mount_point);
@@ -79,6 +86,12 @@ private:
   std::mutex poll_mutex_;
   std::unordered_map<std::string, fuse_pollhandle*> poll_handles_;
 
+  // Services
+  std::mutex services_mutex_;
+  std::map<std::string, rclcpp::GenericClient::SharedPtr> service_clients_;
+  std::map<std::string, std::string> service_types_;
+  std::unordered_map<std::string, std::string> last_responses_;
+
   // Node state
   fuse* fuse_handle_{nullptr};
   std::chrono::milliseconds notification_interval_{100};
@@ -97,6 +110,7 @@ private:
   std::map<std::string, rclcpp::GenericSubscription::SharedPtr> subscriptions_;
 
   // Private methods
+  void discover_services();
   void discover_topics();
   void notify_file_change(const std::string& topic, fuse* fuse_handle);
 };

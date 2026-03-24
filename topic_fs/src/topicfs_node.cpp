@@ -86,6 +86,7 @@ topicfsNode::topicfsNode() : Node("ros2_fuse_node")
         std::chrono::milliseconds(discovery_interval_ms_),
         [this]() {
                 discover_topics();
+                discover_services();
             });
 
   }
@@ -224,6 +225,160 @@ fuse_pollhandle* topicfsNode::take_poll_handle(const std::string& topic)
 }
 
 // -----------------------------------------------------------------------------
+// Public accessors - services
+// -----------------------------------------------------------------------------
+
+std::vector<std::string> topicfsNode::get_services()
+{
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  std::vector<std::string> services;
+  for (const auto& pair : service_types_)
+  {
+    std::string service = pair.first;
+    if (!service.empty() && service[0] == '/')
+    {
+      service = service.substr(1);
+    }
+    services.push_back(service);
+  }
+  return services;
+}
+
+bool topicfsNode::has_service(const std::string& service)
+{
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  return service_clients_.count(service) > 0;
+}
+
+std::optional<std::string> topicfsNode::get_last_response(const std::string& service)
+{
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  auto it = last_responses_.find(service);
+  if (it == last_responses_.end())
+  {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+std::string topicfsNode::call_service(
+  const std::string& service, const nlohmann::json& request)
+{
+  rclcpp::GenericClient::SharedPtr client;
+  std::string service_type;
+  {
+    std::lock_guard<std::mutex> lock(services_mutex_);
+    auto it = service_clients_.find(service);
+    if (it == service_clients_.end())
+    {
+      return R"({"error": "service not found"})";
+    }
+    client = it->second;
+    service_type = service_types_[service];
+  }
+
+  if (!client->wait_for_service(std::chrono::seconds(2)))
+  {
+    return R"({"error": "service not available"})";
+  }
+
+  // GenericClient::Request is void* pointing to raw message memory (not CDR).
+  // We must allocate the message struct, fill it from JSON, and pass the pointer.
+  std::string request_type = service_type + "_Request";
+
+  const rosidl_message_type_support_t* ts =
+    RosMessageConverter::get_type_support(request_type);
+  if (!ts)
+  {
+    return R"({"error": "failed to load request type support"})";
+  }
+
+  const rosidl_message_type_support_t* introspection_ts =
+    get_message_typesupport_handle(ts, "rosidl_typesupport_introspection_cpp");
+  if (!introspection_ts)
+  {
+    return R"({"error": "failed to get introspection type support"})";
+  }
+
+  const auto* members =
+    reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers*>(
+    introspection_ts->data);
+
+  // Allocate and initialize request message memory
+  std::vector<uint8_t> request_buffer(members->size_of_);
+  members->init_function(request_buffer.data(),
+                         rosidl_runtime_cpp::MessageInitialization::ALL);
+
+  // Fill from JSON
+  if (!RosMessageConverter::json_to_members(members, request, request_buffer.data()))
+  {
+    members->fini_function(request_buffer.data());
+    return R"({"error": "failed to fill request from JSON"})";
+  }
+
+  // Send request — pass raw message memory pointer
+  auto future_and_id = client->async_send_request(
+    static_cast<void*>(request_buffer.data()));
+
+  // Wait for response — executor is spinning in ros_thread_
+  auto timeout = std::chrono::seconds(10);
+  auto start = std::chrono::steady_clock::now();
+  while (future_and_id.future.wait_for(std::chrono::milliseconds(10)) !=
+         std::future_status::ready)
+  {
+    if (std::chrono::steady_clock::now() - start > timeout)
+    {
+      client->remove_pending_request(future_and_id.request_id);
+      members->fini_function(request_buffer.data());
+      return R"({"error": "service call timed out"})";
+    }
+  }
+
+  members->fini_function(request_buffer.data());
+
+  auto response = future_and_id.future.get();
+  if (!response)
+  {
+    return R"({"error": "null response"})";
+  }
+
+  // GenericClient response is also raw message memory (not CDR).
+  // Use introspection to deserialize directly from the response memory.
+  std::string response_type = service_type + "_Response";
+
+  const rosidl_message_type_support_t* resp_ts =
+    RosMessageConverter::get_type_support(response_type);
+  if (!resp_ts)
+  {
+    return R"({"error": "failed to load response type support"})";
+  }
+
+  const rosidl_message_type_support_t* resp_introspection_ts =
+    get_message_typesupport_handle(resp_ts, "rosidl_typesupport_introspection_cpp");
+  if (!resp_introspection_ts)
+  {
+    return R"({"error": "failed to get response introspection type support"})";
+  }
+
+  const auto* resp_members =
+    reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers*>(
+    resp_introspection_ts->data);
+
+  // Response void* points to raw message memory — deserialize directly
+  nlohmann::json json_response = RosMessageConverter::members_to_json(
+    resp_members, static_cast<const uint8_t*>(response.get()));
+
+  std::string result = json_response.dump();
+
+  {
+    std::lock_guard<std::mutex> lock(services_mutex_);
+    last_responses_[service] = result;
+  }
+
+  return result;
+}
+
+// -----------------------------------------------------------------------------
 // Configuration setters
 // -----------------------------------------------------------------------------
 
@@ -248,6 +403,8 @@ void topicfsNode::set_notification_interval(std::chrono::milliseconds interval)
 
 void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::string& topic_type)
 {
+    fprintf(stderr, "subscribe_to_topic: captured type='%s' len=%zu\n",
+            topic_type.c_str(), topic_type.size());
   {
     std::lock_guard<std::mutex> lock(messages_mutex_);
     if (subscriptions_.count(topic_name))
@@ -331,6 +488,86 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
   {
     RCLCPP_ERROR(this->get_logger(), "Failed to subscribe to topic %s (%s): %s",
                  topic_name.c_str(), topic_type.c_str(), e.what());
+  }
+}
+
+void topicfsNode::discover_services()
+{
+  // Skip internal ROS2 infrastructure services
+  static const std::set<std::string> ignored_prefixes = {
+    "/ros2_fuse_node/",
+    "/rosout/"
+  };
+
+  auto service_names_and_types = get_service_names_and_types();
+  RCLCPP_DEBUG(this->get_logger(), "discover_services: found %zu services",
+               service_names_and_types.size());
+
+  for (const auto& [service, types] : service_names_and_types)
+  {
+    // Skip internal services
+    bool ignored = false;
+    for (const auto& prefix : ignored_prefixes)
+    {
+      if (service.rfind(prefix, 0) == 0)
+      {
+        ignored = true;
+        break;
+      }
+    }
+    // Also skip any service ending in standard ROS2 node parameter suffixes
+    static const std::set<std::string> ignored_suffixes = {
+      "/describe_parameters",
+      "/get_parameter_types",
+      "/get_parameters",
+      "/get_type_description",
+      "/list_parameters",
+      "/set_parameters",
+      "/set_parameters_atomically"
+    };
+    for (const auto& suffix : ignored_suffixes)
+    {
+      if (service.size() >= suffix.size() &&
+          service.compare(service.size() - suffix.size(), suffix.size(), suffix) == 0)
+      {
+        ignored = true;
+        break;
+      }
+    }
+    if (ignored)
+    {
+      continue;
+    }
+
+    if (types.empty())
+    {
+      continue;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(services_mutex_);
+      if (service_clients_.count(service))
+      {
+        continue;
+      }
+    }
+
+    try
+    {
+      auto client = create_generic_client(service, types[0]);
+      {
+        std::lock_guard<std::mutex> lock(services_mutex_);
+        service_clients_[service] = client;
+        service_types_[service] = types[0];
+      }
+      RCLCPP_INFO(this->get_logger(), "Discovered service: %s (%s)",
+                  service.c_str(), types[0].c_str());
+    }
+    catch (const std::exception& e)
+    {
+      RCLCPP_ERROR(this->get_logger(), "Failed to create client for service %s: %s",
+                   service.c_str(), e.what());
+    }
   }
 }
 
