@@ -264,33 +264,48 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
     qos.durability_volatile();
 
     auto sub = create_generic_subscription(
-      topic_name, topic_type, qos,
-      [this, topic_name](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg)
-      {
-        RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
-        const auto& buffer = serialized_msg->get_rcl_serialized_message();
-        if (buffer.buffer_length == 0 || !buffer.buffer)
-        {
-          RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s",
-                      topic_name.c_str());
-          return;
-        }
+  topic_name, topic_type, qos,
+  [this, topic_name, topic_type](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg)
+  {
+    RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
+    const auto& buffer = serialized_msg->get_rcl_serialized_message();
+    if (buffer.buffer_length == 0 || !buffer.buffer)
+    {
+      RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s",
+                  topic_name.c_str());
+      return;
+    }
 
-        std::string encoded = base64_encode(buffer.buffer, buffer.buffer_length);
-        nlohmann::json j;
-        j["data"] = encoded;
+    // Attempt human-readable JSON conversion via introspection
+    std::string stored;
+    auto json_result = RosMessageConverter::to_json(topic_type, *serialized_msg);
+    if (json_result.has_value())
+    {
+      stored = json_result->dump();
+    }
+    else
+    {
+      // Fall back to base64 for unknown or custom message types
+      RCLCPP_DEBUG(this->get_logger(),
+                   "Introspection failed for %s, falling back to base64",
+                   topic_type.c_str());
+      std::string encoded = base64_encode(buffer.buffer, buffer.buffer_length);
+      nlohmann::json j;
+      j["data"] = encoded;
+      stored = j.dump();
+    }
 
-        uint64_t version;
-        {
-          std::lock_guard<std::mutex> lock(messages_mutex_);
-          latest_messages_[topic_name] = j.dump();
-          version = ++message_versions_[topic_name];
-        }
+    uint64_t version;
+    {
+      std::lock_guard<std::mutex> lock(messages_mutex_);
+      latest_messages_[topic_name] = stored;
+      version = ++message_versions_[topic_name];
+    }
 
-        notify_file_change(topic_name, fuse_handle_);
-        RCLCPP_DEBUG(this->get_logger(), "Stored message for %s (version %lu)",
-                     topic_name.c_str(), version);
-      });
+    notify_file_change(topic_name, fuse_handle_);
+    RCLCPP_DEBUG(this->get_logger(), "Stored message for %s (version %lu)",
+                 topic_name.c_str(), version);
+  });
 
     {
       std::lock_guard<std::mutex> lock(messages_mutex_);

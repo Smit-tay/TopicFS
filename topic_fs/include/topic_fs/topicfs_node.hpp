@@ -38,6 +38,8 @@
 // FUSE - kept separate due to version requirements
 #include <fuse3/fuse.h>
 
+#include "topic_fs/ros_message_converter.hpp"
+
 class topicfsNode : public rclcpp::Node
 {
 public:

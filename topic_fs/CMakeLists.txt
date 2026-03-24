@@ -17,6 +17,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rmw REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosidl_runtime_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -36,6 +37,7 @@ add_executable(topic_fs
   src/topicfs_node.cpp
   src/topicfs_fuse.cpp
   src/topicfs.cpp
+  src/ros_message_converter.cpp
 )
 
 # Include directories for FUSE and nlohmann_json
@@ -49,6 +51,7 @@ target_include_directories(topic_fs PUBLIC
 # Link libraries for FUSE
 target_link_libraries(topic_fs
   ${FUSE3_LIBRARIES}
+  dl
 )
 
 # Specify FUSE compiler flags
@@ -71,7 +74,9 @@ install(DIRECTORY
 # ROS 2 dependencies (handles includes and linking)
 ament_target_dependencies(topic_fs
   rclcpp
+  rmw
   rosidl_runtime_cpp
+  rosidl_typesupport_introspection_cpp
 )
 
 # Install executable
