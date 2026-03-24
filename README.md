@@ -215,6 +215,29 @@ cat ~/fuse_mount/swiftpro/connected/info
     └── command       ← writable topics only
 ```
 
+## Services
+
+Services appear alongside topics in the filesystem. Each service directory
+contains two files:
+
+- `command` — write a JSON request to call the service
+- `response` — read the last response as JSON
+```bash
+# Move the arm
+echo '{"x": 180.0, "y": 0.0, "z": 145.0, "speed": 5000.0, "wait": true}' \
+    > ~/fuse_mount/swiftpro/move_to/command
+cat ~/fuse_mount/swiftpro/move_to/response
+
+# Control the pump
+echo '{"on": true}' > ~/fuse_mount/swiftpro/set_pump/command
+```
+
+To discover the field names for any service:
+This is still under development, and will eventually show up in the filesystem as well
+```bash
+ros2 interface show 
+# e.g. ros2 interface show swiftpro_resources/srv/MoveTo
+```
 ---
 
 ## Network Setup
