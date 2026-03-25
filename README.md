@@ -65,6 +65,77 @@ watch -n 0.1 cat ~/fuse_mount/swiftpro/position/latest
 
 ---
 
+## Limitations and Architecture
+
+ROSgate_fs exposes ROS 2 topics, services, and actions as a normal POSIX filesystem. While the core functionality works well, there are important limitations stemming from how ROS 2 and its underlying DDS middleware are designed.
+
+#### Why ROSgate_fs Requires Compiled `.so` Files
+
+ROS 2 packages that define messages, services, or actions generate **type support libraries** (`.so` files) during compilation. These files contain the optimized code needed to:
+
+- Serialize data into CDR (the binary format used on the wire)
+- Deserialize incoming data back into structured messages
+- Handle field layout, strings, arrays, nested types, and memory alignment
+
+**Discovery** of topics, services, and actions can be done without these files.  
+However, **actual communication** — reading messages, calling services, sending action goals, etc. — requires these `.so` files to be loaded at runtime.
+
+ROSgate_fs loads them dynamically so it can correctly encode and decode data.
+
+#### This Is a Fundamental Limitation of ROS 2
+
+After exploring dynamic approaches (using `rosidl_dynamic_typesupport` and runtime type descriptions), the reality is:
+
+> There is currently no clean, reliable way in ROS 2 (as of Jazzy/Kilted) to perform fully generic communication with arbitrary services and actions **without** their corresponding compiled type support libraries (`.so` files).
+
+This is not a shortcoming of ROSgate_fs — it is an architectural characteristic of ROS 2 and DDS. DDS is a **data-centric** middleware optimized for performance, predictability, and safety-critical systems. It was not designed as a general-purpose, schema-on-the-fly messaging system like MQTT or RabbitMQ.
+
+The high-level ROS 2 client libraries (`rclcpp`) were built with the assumption that type support is available at runtime.
+
+#### Providing the Required `.so` Files
+
+The `.so` files **must** be compiled for the **exact same architecture and OS** as the machine running ROSgate_fs (typically x86_64 Linux). Files built for ARM (e.g. Jetson, Raspberry Pi) will not work on an x86_64 PC, and vice versa.
+
+**Recommended workflow:**
+
+1. On the host machine running your robot’s ROS 2 controller, export the needed files to a seperate location.:
+
+   ```bash
+   source ~/robot_ws/install/setup.bash
+
+   mkdir -p ~/rosgate_fs_interfaces/lib
+   mkdir -p ~/rosgate_fs_interfaces/share
+
+   # Replace <your_package> with your actual package name(s)
+   cp -r $(ros2 pkg prefix <your_package>)/lib/* ~/rosgate_fs_interfaces/lib/ 2>/dev/null || true
+   cp -r $(ros2 pkg prefix <your_package>)/share/<your_package> ~/rosgate_fs_interfaces/share/ 2>/dev/null || true
+   ```
+   
+Repeat for every package containing messages, services, or actions you want to use.
+  
+  
+  Transfer those files to the host which will run the topicfs podman (Docker) container
+
+Mount these files into the container by adding the following to your docker-compose.yml:
+
+```YAML
+volumes:
+  - ~/rosgate_fs_interfaces:/rosgate_interfaces:ro
+```
+Ensure the container can find them by setting the environment variables in the command section:
+
+```bash
+command: >
+  bash -c "
+    source /opt/ros/jazzy/setup.bash &&
+    export AMENT_PREFIX_PATH=/rosgate_interfaces:$$AMENT_PREFIX_PATH &&
+    export LD_LIBRARY_PATH=/rosgate_interfaces/lib:$$LD_LIBRARY_PATH &&
+    ros2 run rosgate_fs rosgate_fs_node
+  "
+```
+
+We will continue improving dynamic support where possible (especially for topics), but for services and actions, the compiled typesupport libraries remain a requirement for the foreseeable future.
+
 ## Prerequisites
 
 - Ubuntu 24.04 (Noble) — the container base image
