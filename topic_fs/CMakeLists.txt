@@ -13,9 +13,12 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+
 # Find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
@@ -31,6 +34,10 @@ if(NOT nlohmann_json_FOUND)
   message(WARNING "nlohmann_json not found via CMake, assuming system package")
 endif()
 
+# -----------------------------------------------------------------------------
+# Executable
+# -----------------------------------------------------------------------------
+
 # Add executable
 add_executable(topic_fs
   src/main.cpp
@@ -40,25 +47,41 @@ add_executable(topic_fs
   src/ros_message_converter.cpp
 )
 
+
+# We require 3.12 (or higher ?)
+target_compile_definitions(topic_fs PRIVATE FUSE_USE_VERSION=312)
+
 # Include directories for FUSE and nlohmann_json
 target_include_directories(topic_fs PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${FUSE3_INCLUDE_DIRS}
   ${nlohmann_json_INCLUDE_DIRS}
-  #/usr/include/nlohmann # Adjust if nlohmann_json is installed elsewhere
 )
 
 # Link libraries for FUSE
 target_link_libraries(topic_fs
   ${FUSE3_LIBRARIES}
+  nlohmann_json::nlohmann_json
   dl
 )
 
 # Specify FUSE compiler flags
 target_compile_options(topic_fs PRIVATE ${FUSE_CFLAGS_OTHER})
 
-# In CMakeLists.txt, inside the target setup for topic_fs
-target_compile_definitions(topic_fs PRIVATE FUSE_USE_VERSION=312)
+# All ROS2 includes and linking — note: no message packages here.
+# TopicFS resolves all message types dynamically at runtime via dlopen/dlsym.
+# Third-party message .so files are found automatically provided their
+# containing install prefix is on AMENT_PREFIX_PATH (i.e. setup.bash sourced).
+ament_target_dependencies(topic_fs
+  rclcpp
+  rmw
+  rosidl_runtime_cpp
+  rosidl_typesupport_introspection_cpp
+)
+
+# -----------------------------------------------------------------------------
+# Install
+# -----------------------------------------------------------------------------
 
 install(TARGETS
   topic_fs
@@ -71,42 +94,23 @@ install(DIRECTORY
 )
 
 
-# ROS 2 dependencies (handles includes and linking)
-ament_target_dependencies(topic_fs
-  rclcpp
-  rmw
-  rosidl_runtime_cpp
-  rosidl_typesupport_introspection_cpp
-)
+
 
 # Install executable
 install(TARGETS topic_fs
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install launch files, configs, etc. (uncomment if needed)
-# install(DIRECTORY launch config
-#   DESTINATION share/${PROJECT_NAME}
-# )
-
+# -----------------------------------------------------------------------------
 # Testing
+# -----------------------------------------------------------------------------
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  find_package(ament_cmake_uncrustify REQUIRED)
-  find_package(ament_cmake_cpplint REQUIRED)
-  set(AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint)
-  ament_cpplint(
-    FILTERS
-      "-whitespace/newline,-readability/braces,-whitespace/line_length"
-      ",-whitespace/comments,-whitespace/end_of_line"
-      ",-build/include_order,-build/header_guard"
-      ",-readability/casting,-readability/todo"
-      ",-whitespace/blank_line"
+  set(AMENT_LINT_AUTO_EXCLUDE
+    ament_cmake_uncrustify
+    ament_cmake_cpplint
   )
-#  ament_uncrustify(
-#    TESTNAME uncrustify
-#    CONFIG_FILE ${CMAKE_CURRENT_SOURCE_DIR}/uncrustify.cfg
-#  )
   ament_lint_auto_find_test_dependencies()
 endif()
 

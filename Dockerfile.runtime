@@ -1,0 +1,60 @@
+# Dockerfile.runtime
+# Copyright 2025 Jack Sidman Smith
+# Licensed under the MIT License. See LICENSE in project root.
+#
+# Lean runtime image for TopicFS.
+# Runs on the NUC alongside the SwiftRos2 containers.
+#
+# The built TopicFS binary is NOT baked into this image.
+# It is built in the dev container and the install tree is
+# mounted at runtime from the NUC host filesystem.
+#
+# This image only needs rebuilding when system-level dependencies change.
+# Code changes only require:
+#   NF_00 (colcon build) → NF_03 (restart runtime container)
+
+FROM ros:jazzy-ros-core
+
+# -----------------------------------------------------------------------------
+# Environment
+# -----------------------------------------------------------------------------
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    ROS_DISTRO=jazzy \
+    ROS_DOMAIN_ID=11 \
+    TZ=Europe/Berlin \
+    TOPICFS_TYPESUPPORT_DIR=/opt/topicfs_typesupport
+
+# -----------------------------------------------------------------------------
+# Runtime dependencies only.
+# fuse3 — required to mount the FUSE filesystem
+# libfuse3-dev is NOT needed at runtime — only at build time
+# -----------------------------------------------------------------------------
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        fuse3 \
+        ros-jazzy-rclcpp \
+        ros-jazzy-rcl-interfaces \
+        ros-jazzy-rmw \
+        ros-jazzy-rosidl-runtime-cpp \
+        ros-jazzy-rosidl-typesupport-introspection-cpp \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Mount points
+# -----------------------------------------------------------------------------
+
+RUN mkdir -p /opt/topicfs_typesupport
+
+# -----------------------------------------------------------------------------
+# Entrypoint
+# -----------------------------------------------------------------------------
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

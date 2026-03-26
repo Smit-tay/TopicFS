@@ -1,22 +1,7 @@
+// ros_message_converter.cpp
 // Copyright 2025 Jack Sidman Smith
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// Licensed under the MIT License. See LICENSE in project root.
 
 // Standard library
 #include <cstring>
@@ -64,12 +49,10 @@ std::optional<nlohmann::json> RosMessageConverter::to_json(
     return std::nullopt;
   }
 
-  // Get the introspection type support
   const rosidl_message_type_support_t * introspection_ts =
     get_message_typesupport_handle(
-    type_support,
-    "rosidl_typesupport_introspection_cpp");
-
+      type_support,
+      "rosidl_typesupport_introspection_cpp");
   if (!introspection_ts)
   {
     return std::nullopt;
@@ -77,24 +60,23 @@ std::optional<nlohmann::json> RosMessageConverter::to_json(
 
   const auto * members =
     reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-    introspection_ts->data);
-
+      introspection_ts->data);
   if (!members)
   {
     return std::nullopt;
   }
 
-  // Allocate memory for the deserialized message
+  // Allocate and initialise message memory
   std::vector<uint8_t> buffer(members->size_of_);
   members->init_function(buffer.data(), rosidl_runtime_cpp::MessageInitialization::ALL);
 
-  // Deserialize the CDR buffer into the message memory
+  // Deserialize CDR into message memory
   rmw_serialized_message_t serialized_msg = rmw_get_zero_initialized_serialized_message();
   const auto & rcl_msg = msg.get_rcl_serialized_message();
-  serialized_msg.buffer = rcl_msg.buffer;
-  serialized_msg.buffer_length = rcl_msg.buffer_length;
+  serialized_msg.buffer          = rcl_msg.buffer;
+  serialized_msg.buffer_length   = rcl_msg.buffer_length;
   serialized_msg.buffer_capacity = rcl_msg.buffer_capacity;
-  serialized_msg.allocator = rcl_msg.allocator;
+  serialized_msg.allocator       = rcl_msg.allocator;
 
   rmw_ret_t ret = rmw_deserialize(&serialized_msg, type_support, buffer.data());
   if (ret != RMW_RET_OK)
@@ -124,9 +106,8 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
 
   const rosidl_message_type_support_t * introspection_ts =
     get_message_typesupport_handle(
-    type_support,
-    "rosidl_typesupport_introspection_cpp");
-
+      type_support,
+      "rosidl_typesupport_introspection_cpp");
   if (!introspection_ts)
   {
     return std::nullopt;
@@ -134,18 +115,16 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
 
   const auto * members =
     reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-    introspection_ts->data);
-
+      introspection_ts->data);
   if (!members)
   {
     return std::nullopt;
   }
 
-  // Allocate and initialize message memory
+  // Allocate and initialise message memory
   std::vector<uint8_t> buffer(members->size_of_);
   members->init_function(buffer.data(), rosidl_runtime_cpp::MessageInitialization::ALL);
 
-  // Fill message memory from JSON
   if (!json_to_members(members, json, buffer.data()))
   {
     members->fini_function(buffer.data());
@@ -168,7 +147,22 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
 }
 
 // -----------------------------------------------------------------------------
-// Private - get_type_support
+// Public - get_type_support
+//
+// Loads the typesupport and introspection .so files for the given type string
+// using dlopen with a bare filename. The dynamic linker finds the correct .so
+// automatically because ament's setup.bash adds the package's lib/ directory
+// to LD_LIBRARY_PATH via AMENT_PREFIX_PATH. No manual path management here.
+//
+// For third-party packages: build with colcon, install to a prefix, source
+// that prefix's setup.bash before launching TopicFS. That is all that is
+// required.
+//
+// For service request/response types, the type_string convention is:
+//   "some_msgs/srv/MyService_Request"
+//   "some_msgs/srv/MyService_Response"
+// ROS2 generates these as ordinary message structs, so the same symbol
+// naming convention applies and this function handles them transparently.
 // -----------------------------------------------------------------------------
 
 const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
@@ -184,29 +178,56 @@ const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
   std::string package, subfolder, type_name;
   if (!parse_type_string(type_string, package, subfolder, type_name))
   {
+    fprintf(stderr,
+      "[RosMessageConverter] Failed to parse type string: '%s'\n",
+      type_string.c_str());
     return nullptr;
   }
 
-  // Build the shared library name
-  // e.g. geometry_msgs/msg/Point -> libgeometry_msgs__rosidl_typesupport_cpp.so
-  std::string lib_name = "lib" + package + "__rosidl_typesupport_cpp.so";
-  // Build the function symbol name
-  // e.g. rosidl_typesupport_cpp__get_message_type_support_handle__geometry_msgs__msg__Point
-  std::string symbol = "rosidl_typesupport_cpp__get_message_type_support_handle__" +
+  // Load the typesupport .so.
+  // LD_LIBRARY_PATH (set by ament setup.bash) ensures dlopen finds it.
+  std::string ts_lib = "lib" + package + "__rosidl_typesupport_cpp.so";
+  void * ts_handle = dlopen(ts_lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  if (!ts_handle)
+  {
+    fprintf(stderr,
+      "[RosMessageConverter] dlopen failed for '%s': %s\n"
+      "  Ensure the package's install prefix is on AMENT_PREFIX_PATH\n"
+      "  (source <install>/setup.bash before launching TopicFS).\n",
+      ts_lib.c_str(), dlerror());
+    return nullptr;
+  }
+
+  // Load the introspection .so explicitly.
+  // For system packages this is typically pulled in transitively, but for
+  // third-party packages dropped into the container we load it explicitly
+  // to guarantee it is present before get_message_typesupport_handle() is called.
+  std::string intr_lib = "lib" + package + "__rosidl_typesupport_introspection_cpp.so";
+  void * intr_handle = dlopen(intr_lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  if (!intr_handle)
+  {
+    // Non-fatal: it may already be loaded transitively. Log and continue.
+    // get_message_typesupport_handle() will fail below with a clear error
+    // if introspection support is truly absent.
+    fprintf(stderr,
+      "[RosMessageConverter] Warning: dlopen failed for '%s': %s\n"
+      "  Continuing — may be loaded transitively.\n",
+      intr_lib.c_str(), dlerror());
+  }
+
+  // Resolve the typesupport getter symbol.
+  // Convention: rosidl_typesupport_cpp__get_message_type_support_handle__pkg__subfolder__Type
+  std::string symbol =
+    "rosidl_typesupport_cpp__get_message_type_support_handle__" +
     package + "__" + subfolder + "__" + type_name;
 
-  void * handle = dlopen(lib_name.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-  if (!handle)
-  {
-    return nullptr;
-  }
-
   using GetTypeSupportFn = const rosidl_message_type_support_t * (*)();
-  auto fn = reinterpret_cast<GetTypeSupportFn>(dlsym(handle, symbol.c_str()));
-
+  auto fn = reinterpret_cast<GetTypeSupportFn>(dlsym(ts_handle, symbol.c_str()));
   if (!fn)
   {
-    dlclose(handle);
+    fprintf(stderr,
+      "[RosMessageConverter] dlsym failed for symbol '%s' in '%s': %s\n",
+      symbol.c_str(), ts_lib.c_str(), dlerror());
     return nullptr;
   }
 
@@ -238,7 +259,7 @@ bool RosMessageConverter::parse_type_string(
     return false;
   }
 
-  package = type_string.substr(0, first_slash);
+  package   = type_string.substr(0, first_slash);
   subfolder = type_string.substr(first_slash + 1, second_slash - first_slash - 1);
   type_name = type_string.substr(second_slash + 1);
 
@@ -251,7 +272,7 @@ bool RosMessageConverter::parse_type_string(
 }
 
 // -----------------------------------------------------------------------------
-// Private - members_to_json
+// Public - members_to_json
 // -----------------------------------------------------------------------------
 
 nlohmann::json RosMessageConverter::members_to_json(
@@ -269,47 +290,47 @@ nlohmann::json RosMessageConverter::members_to_json(
     std::string name(member.name_);
 
     auto read_scalar = [&](const uint8_t * ptr) -> nlohmann::json
+    {
+      switch (member.type_id_)
       {
-        switch (member.type_id_)
+        case ROS_TYPE_FLOAT:
+          return *reinterpret_cast<const float *>(ptr);
+        case ROS_TYPE_DOUBLE:
+          return *reinterpret_cast<const double *>(ptr);
+        case ROS_TYPE_LONG_DOUBLE:
+          return static_cast<double>(*reinterpret_cast<const long double *>(ptr));
+        case ROS_TYPE_BOOLEAN:
+          return *reinterpret_cast<const bool *>(ptr);
+        case ROS_TYPE_CHAR:
+        case ROS_TYPE_OCTET:
+        case ROS_TYPE_UINT8:
+          return *reinterpret_cast<const uint8_t *>(ptr);
+        case ROS_TYPE_INT8:
+          return *reinterpret_cast<const int8_t *>(ptr);
+        case ROS_TYPE_UINT16:
+          return *reinterpret_cast<const uint16_t *>(ptr);
+        case ROS_TYPE_INT16:
+          return *reinterpret_cast<const int16_t *>(ptr);
+        case ROS_TYPE_UINT32:
+          return *reinterpret_cast<const uint32_t *>(ptr);
+        case ROS_TYPE_INT32:
+          return *reinterpret_cast<const int32_t *>(ptr);
+        case ROS_TYPE_UINT64:
+          return *reinterpret_cast<const uint64_t *>(ptr);
+        case ROS_TYPE_INT64:
+          return *reinterpret_cast<const int64_t *>(ptr);
+        case ROS_TYPE_STRING:
+          return *reinterpret_cast<const std::string *>(ptr);
+        case ROS_TYPE_MESSAGE:
         {
-          case ROS_TYPE_FLOAT:
-            return *reinterpret_cast<const float *>(ptr);
-          case ROS_TYPE_DOUBLE:
-            return *reinterpret_cast<const double *>(ptr);
-          case ROS_TYPE_LONG_DOUBLE:
-            return static_cast<double>(*reinterpret_cast<const long double *>(ptr));
-          case ROS_TYPE_BOOLEAN:
-            return *reinterpret_cast<const bool *>(ptr);
-          case ROS_TYPE_CHAR:
-          case ROS_TYPE_OCTET:
-          case ROS_TYPE_UINT8:
-            return *reinterpret_cast<const uint8_t *>(ptr);
-          case ROS_TYPE_INT8:
-            return *reinterpret_cast<const int8_t *>(ptr);
-          case ROS_TYPE_UINT16:
-            return *reinterpret_cast<const uint16_t *>(ptr);
-          case ROS_TYPE_INT16:
-            return *reinterpret_cast<const int16_t *>(ptr);
-          case ROS_TYPE_UINT32:
-            return *reinterpret_cast<const uint32_t *>(ptr);
-          case ROS_TYPE_INT32:
-            return *reinterpret_cast<const int32_t *>(ptr);
-          case ROS_TYPE_UINT64:
-            return *reinterpret_cast<const uint64_t *>(ptr);
-          case ROS_TYPE_INT64:
-            return *reinterpret_cast<const int64_t *>(ptr);
-          case ROS_TYPE_STRING:
-            return *reinterpret_cast<const std::string *>(ptr);
-          case ROS_TYPE_MESSAGE:
-          {
-            const auto * sub_members =
-              reinterpret_cast<const MessageMembers *>(member.members_->data);
-            return members_to_json(sub_members, ptr);
-          }
-          default:
-            return nullptr;
+          const auto * sub_members =
+            reinterpret_cast<const MessageMembers *>(member.members_->data);
+          return members_to_json(sub_members, ptr);
         }
-      };
+        default:
+          return nullptr;
+      }
+    };
 
     if (member.is_array_)
     {
@@ -317,15 +338,7 @@ nlohmann::json RosMessageConverter::members_to_json(
       size_t count = member.array_size_;
       if (member.is_upper_bound_ || count == 0)
       {
-        // Dynamic array — use size_function
-        if (member.size_function)
-        {
-          count = member.size_function(field_ptr);
-        }
-        else
-        {
-          count = 0;
-        }
+        count = member.size_function ? member.size_function(field_ptr) : 0;
       }
       for (size_t j = 0; j < count; ++j)
       {
@@ -349,7 +362,7 @@ nlohmann::json RosMessageConverter::members_to_json(
 }
 
 // -----------------------------------------------------------------------------
-// Private - json_to_members
+// Public - json_to_members
 // -----------------------------------------------------------------------------
 
 bool RosMessageConverter::json_to_members(
@@ -367,74 +380,74 @@ bool RosMessageConverter::json_to_members(
 
     if (!json.contains(name))
     {
-      // Field not in JSON — leave at default value, not an error
+      // Field absent from JSON — leave at initialised default, not an error
       continue;
     }
 
     const nlohmann::json & val = json[name];
 
     auto write_scalar = [&](uint8_t * ptr, const nlohmann::json & v) -> bool
+    {
+      try
       {
-        try
+        switch (member.type_id_)
         {
-          switch (member.type_id_)
+          case ROS_TYPE_FLOAT:
+            *reinterpret_cast<float *>(ptr) = v.get<float>();
+            break;
+          case ROS_TYPE_DOUBLE:
+            *reinterpret_cast<double *>(ptr) = v.get<double>();
+            break;
+          case ROS_TYPE_LONG_DOUBLE:
+            *reinterpret_cast<long double *>(ptr) = v.get<double>();
+            break;
+          case ROS_TYPE_BOOLEAN:
+            *reinterpret_cast<bool *>(ptr) = v.get<bool>();
+            break;
+          case ROS_TYPE_CHAR:
+          case ROS_TYPE_UINT8:
+            *reinterpret_cast<uint8_t *>(ptr) = v.get<uint8_t>();
+            break;
+          case ROS_TYPE_INT8:
+            *reinterpret_cast<int8_t *>(ptr) = v.get<int8_t>();
+            break;
+          case ROS_TYPE_UINT16:
+            *reinterpret_cast<uint16_t *>(ptr) = v.get<uint16_t>();
+            break;
+          case ROS_TYPE_INT16:
+            *reinterpret_cast<int16_t *>(ptr) = v.get<int16_t>();
+            break;
+          case ROS_TYPE_UINT32:
+            *reinterpret_cast<uint32_t *>(ptr) = v.get<uint32_t>();
+            break;
+          case ROS_TYPE_INT32:
+            *reinterpret_cast<int32_t *>(ptr) = v.get<int32_t>();
+            break;
+          case ROS_TYPE_UINT64:
+            *reinterpret_cast<uint64_t *>(ptr) = v.get<uint64_t>();
+            break;
+          case ROS_TYPE_INT64:
+            *reinterpret_cast<int64_t *>(ptr) = v.get<int64_t>();
+            break;
+          case ROS_TYPE_STRING:
+            *reinterpret_cast<std::string *>(ptr) = v.get<std::string>();
+            break;
+          case ROS_TYPE_MESSAGE:
           {
-            case ROS_TYPE_FLOAT:
-              *reinterpret_cast<float *>(ptr) = v.get<float>();
-              break;
-            case ROS_TYPE_DOUBLE:
-              *reinterpret_cast<double *>(ptr) = v.get<double>();
-              break;
-            case ROS_TYPE_LONG_DOUBLE:
-              *reinterpret_cast<long double *>(ptr) = v.get<double>();
-              break;
-            case ROS_TYPE_BOOLEAN:
-              *reinterpret_cast<bool *>(ptr) = v.get<bool>();
-              break;
-            case ROS_TYPE_CHAR:
-            case ROS_TYPE_UINT8:
-              *reinterpret_cast<uint8_t *>(ptr) = v.get<uint8_t>();
-              break;
-            case ROS_TYPE_INT8:
-              *reinterpret_cast<int8_t *>(ptr) = v.get<int8_t>();
-              break;
-            case ROS_TYPE_UINT16:
-              *reinterpret_cast<uint16_t *>(ptr) = v.get<uint16_t>();
-              break;
-            case ROS_TYPE_INT16:
-              *reinterpret_cast<int16_t *>(ptr) = v.get<int16_t>();
-              break;
-            case ROS_TYPE_UINT32:
-              *reinterpret_cast<uint32_t *>(ptr) = v.get<uint32_t>();
-              break;
-            case ROS_TYPE_INT32:
-              *reinterpret_cast<int32_t *>(ptr) = v.get<int32_t>();
-              break;
-            case ROS_TYPE_UINT64:
-              *reinterpret_cast<uint64_t *>(ptr) = v.get<uint64_t>();
-              break;
-            case ROS_TYPE_INT64:
-              *reinterpret_cast<int64_t *>(ptr) = v.get<int64_t>();
-              break;
-            case ROS_TYPE_STRING:
-              *reinterpret_cast<std::string *>(ptr) = v.get<std::string>();
-              break;
-            case ROS_TYPE_MESSAGE:
-            {
-              const auto * sub_members =
-                reinterpret_cast<const MessageMembers *>(member.members_->data);
-              return json_to_members(sub_members, v, ptr);
-            }
-            default:
-              return false;
+            const auto * sub_members =
+              reinterpret_cast<const MessageMembers *>(member.members_->data);
+            return json_to_members(sub_members, v, ptr);
           }
-          return true;
+          default:
+            return false;
         }
-        catch (const std::exception &)
-        {
-          return false;
-        }
-      };
+        return true;
+      }
+      catch (const std::exception &)
+      {
+        return false;
+      }
+    };
 
     if (member.is_array_)
     {
@@ -443,7 +456,6 @@ bool RosMessageConverter::json_to_members(
         return false;
       }
       size_t count = val.size();
-      // Resize dynamic arrays
       if ((member.is_upper_bound_ || member.array_size_ == 0) && member.resize_function)
       {
         member.resize_function(field_ptr, count);

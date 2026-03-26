@@ -1,29 +1,13 @@
+// topicfs_node.hpp
 // Copyright 2025 Jack Sidman Smith
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// Licensed under the MIT License. See LICENSE in project root.
 
 #ifndef TOPICFS_NODE_HPP
 #define TOPICFS_NODE_HPP
 
 // Standard library
 #include <chrono>
-#include <future>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -36,9 +20,10 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-// FUSE - kept separate due to version requirements
+// FUSE
 #include <fuse3/fuse.h>
 
+// Project
 #include "topic_fs/ros_message_converter.hpp"
 
 class topicfsNode : public rclcpp::Node
@@ -46,72 +31,81 @@ class topicfsNode : public rclcpp::Node
 public:
   topicfsNode();
 
-  // Accessors - topic data
+  // ── Topic data ─────────────────────────────────────────────────────────────
   std::optional<std::string> get_latest_message(const std::string& topic);
   std::optional<std::string> get_topic_type(const std::string& topic);
-  uint64_t get_message_version(const std::string& topic);
-  std::vector<std::string> get_topics();
+  uint64_t                   get_message_version(const std::string& topic);
+  std::vector<std::string>   get_topics();
 
-  // Accessors - publishers
+  // ── Publishers ─────────────────────────────────────────────────────────────
   bool has_publisher(const std::string& topic);
   bool publish_message(const std::string& topic, rclcpp::SerializedMessage& msg);
 
-  // Accessors - poll handles
-  void store_poll_handle(const std::string& topic, fuse_pollhandle* ph);
+  // ── Poll handles ───────────────────────────────────────────────────────────
+  void             store_poll_handle(const std::string& topic, fuse_pollhandle* ph);
   fuse_pollhandle* take_poll_handle(const std::string& topic);
 
-  // Accessors - services
-  std::vector<std::string> get_services();
-  bool has_service(const std::string& service);
-  std::string call_service(const std::string& service, const nlohmann::json& request);
+  // ── Services ───────────────────────────────────────────────────────────────
+  std::vector<std::string>   get_services();
+  bool                       has_service(const std::string& service);
+  std::string                call_service(const std::string& service,
+                                          const nlohmann::json& request);
   std::optional<std::string> get_last_response(const std::string& service);
 
-  // Configuration
+  // ── Configuration ──────────────────────────────────────────────────────────
   void set_fuse_handle(fuse* handle);
   void set_mount_point(const std::string& mount_point);
   void set_notification_interval(std::chrono::milliseconds interval);
 
-  // Topic management
+  // ── Topic management ───────────────────────────────────────────────────────
   void subscribe_to_topic(const std::string& topic_name, const std::string& topic_type);
 
 private:
-  // Shared data - all access must go through public accessors
-  std::mutex messages_mutex_;
-  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;
-  std::map<std::string, std::string> topic_types_;
-  std::unordered_map<std::string, std::string> latest_messages_;
-  std::unordered_map<std::string, uint64_t> message_versions_;
+  // ── Topic state ────────────────────────────────────────────────────────────
+  std::mutex                                                      messages_mutex_;
+  std::map<std::string, rclcpp::GenericPublisher::SharedPtr>      publishers_;
+  std::map<std::string, std::string>                              topic_types_;
+  std::unordered_map<std::string, std::string>                    latest_messages_;
+  std::unordered_map<std::string, uint64_t>                       message_versions_;
+  std::map<std::string, rclcpp::GenericSubscription::SharedPtr>   subscriptions_;
 
-  // Poll handles - one per topic, consumed on delivery
-  std::mutex poll_mutex_;
-  std::unordered_map<std::string, fuse_pollhandle*> poll_handles_;
+  // ── Poll handles ───────────────────────────────────────────────────────────
+  std::mutex                                                       poll_mutex_;
+  std::unordered_map<std::string, fuse_pollhandle*>                poll_handles_;
 
-  // Services
-  std::mutex services_mutex_;
-  std::map<std::string, rclcpp::GenericClient::SharedPtr> service_clients_;
-  std::map<std::string, std::string> service_types_;
-  std::unordered_map<std::string, std::string> last_responses_;
+  // ── Service state ──────────────────────────────────────────────────────────
+  std::mutex                                                       services_mutex_;
+  std::map<std::string, rclcpp::GenericClient::SharedPtr>          service_clients_;
+  std::map<std::string, std::string>                               service_types_;
+  std::unordered_map<std::string, std::string>                     last_responses_;
 
-  // Node state
-  fuse* fuse_handle_{nullptr};
-  std::chrono::milliseconds notification_interval_{100};
-  std::string mount_point_;
-  std::vector<std::string> writable_topics_;
+  // ── Node state ─────────────────────────────────────────────────────────────
+  fuse*                              fuse_handle_{nullptr};
+  std::string                        mount_point_;
+  std::chrono::milliseconds          notification_interval_{100};
+  std::vector<std::string>           writable_topics_;
 
-  // Discovery timer
-  rclcpp::TimerBase::SharedPtr discovery_timer_;
-  int discovery_interval_ms_{1000};
+  // ── Discovery ──────────────────────────────────────────────────────────────
+  rclcpp::TimerBase::SharedPtr       discovery_timer_;
+  int                                discovery_interval_ms_{1000};
 
-  // Notification throttling
-  std::mutex notification_mutex_;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_notification_;
+  // ── Notification throttling ────────────────────────────────────────────────
+  std::mutex                                                       notification_mutex_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+                                                                   last_notification_;
 
-  // Subscriptions
-  std::map<std::string, rclcpp::GenericSubscription::SharedPtr> subscriptions_;
-
-  // Private methods
-  void discover_services();
+  // ── Private methods ────────────────────────────────────────────────────────
   void discover_topics();
+  void discover_services();
+
+  // Actions are currently exposed as raw /_action/ services and topics —
+  // they appear in the filesystem and are interactable but not ergonomic.
+  // discover_actions() is reserved for a future task that will implement
+  // proper action support using a goal/feedback/result directory structure.
+  // At that point, /_action/ internals will be filtered from discover_topics()
+  // and discover_services() and replaced by the action abstraction.
+  void discover_actions();  // stub — not yet implemented
+
   void notify_file_change(const std::string& topic, fuse* fuse_handle);
 };
 

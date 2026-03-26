@@ -1,105 +1,128 @@
-# Start with an official ROS 2 base image for Jazzy Jalisco
+# Dockerfile
+# Copyright 2025 Jack Sidman Smith
+# Licensed under the MIT License. See LICENSE in project root.
+#
+# Development image for TopicFS only.
+#
+# SwiftRos2 (and any other ROS2 package) runs in its own container.
+# The two containers communicate via DDS over network_mode: host.
+#
+# To make a third-party package's messages readable by TopicFS:
+#   1. Build the package in its own container:
+#        colcon build --packages-select <pkg> \
+#                     --install-base /opt/topicfs_typesupport/<pkg>
+#   2. Copy the install tree into this container:
+#        podman cp <src_container>:/opt/topicfs_typesupport/<pkg> \
+#                  topicfs:/opt/topicfs_typesupport/<pkg>
+#   3. Source the companion script before running TopicFS:
+#        source scripts/setup_typesupport.sh
+
 FROM ros:jazzy-ros-base
 
-# Set environment variables
+# -----------------------------------------------------------------------------
+# Environment
+# -----------------------------------------------------------------------------
+
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     ROS_DISTRO=jazzy \
     ROS_DOMAIN_ID=11 \
-    TZ=Europe/Berlin
+    TZ=Europe/Berlin \
+    TOPICFS_TYPESUPPORT_DIR=/opt/topicfs_typesupport
 
-# Define build arguments for host UID, GID, and username with defaults
+# -----------------------------------------------------------------------------
+# Build arguments
+# -----------------------------------------------------------------------------
+
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 ARG USERNAME=user
 
-# Install essential packages and ROS development tools
+# -----------------------------------------------------------------------------
+# System packages
+# -----------------------------------------------------------------------------
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    bash-completion \
-    curl \
-    clangd \
-    fuse3 \
-    gdb \
-    git \
-    libfuse3-dev \
-    nlohmann-json3-dev \
-    openssh-client \
-    python3-colcon-argcomplete \
-    python3-colcon-common-extensions \
-    sudo \
-    vim \
-    && apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+        bash-completion \
+        clangd \
+        curl \
+        fuse3 \
+        gdb \
+        git \
+        libfuse3-dev \
+        nlohmann-json3-dev \
+        openssh-client \
+        python3-colcon-argcomplete \
+        python3-colcon-common-extensions \
+        sudo \
+        vim \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /home/jack/dev/smithjack.net
+# -----------------------------------------------------------------------------
+# User setup
+# -----------------------------------------------------------------------------
 
-# Setup user configuration
-# Create or rename group and user, handle existing UID/GID conflicts
-RUN echo "Configuring group with GID=$HOST_GID for $USERNAME" && \
-    (getent group $HOST_GID && groupmod -n $USERNAME $(getent group $HOST_GID | cut -d: -f1) || groupadd --gid $HOST_GID $USERNAME) && \
-    echo "Configuring user $USERNAME with UID=$HOST_UID, GID=$HOST_GID" && \
-    (id -u $HOST_UID >/dev/null 2>&1 && \
-     echo "UID $HOST_UID exists, updating user" && \
-     usermod -l $USERNAME -d /home/$USERNAME -m -g $HOST_GID $(id -un $HOST_UID) 2>/dev/null || true) && \
-    echo "Configuring sudo and bashrc for $USERNAME" && \
+RUN echo "Configuring group GID=$HOST_GID for $USERNAME" && \
+    (getent group $HOST_GID \
+        && groupmod -n $USERNAME $(getent group $HOST_GID | cut -d: -f1) \
+        || groupadd --gid $HOST_GID $USERNAME) && \
+    echo "Configuring user UID=$HOST_UID GID=$HOST_GID" && \
+    (id -u $HOST_UID >/dev/null 2>&1 \
+        && usermod -l $USERNAME -d /home/$USERNAME -m -g $HOST_GID \
+                   $(id -un $HOST_UID) 2>/dev/null \
+        || true) && \
     echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/$USERNAME && \
     chmod 0440 /etc/sudoers.d/$USERNAME && \
-    echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc && \
-    echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc && \
-    echo "Setting ownership of /topicfs to $USERNAME:$HOST_GID" && \
-    mkdir -p /home/jack/dev/smithjack.net && \
-    chown -R $USERNAME:$HOST_GID /home/jack/dev/smithjack.net && \
     mkdir -p /home/$USERNAME/.ros/log && \
-    chown -R $USERNAME:$HOST_GID /home/$USERNAME && \
-    echo "User setup complete: $(id $USERNAME)"
+    mkdir -p /home/jack/dev/smithjack.net && \
+    chown -R $USERNAME:$HOST_GID /home/$USERNAME \
+                                  /home/jack/dev/smithjack.net && \
+    echo "source /opt/ros/$ROS_DISTRO/setup.bash" \
+        >> /home/$USERNAME/.bashrc && \
+    echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" \
+        >> /home/$USERNAME/.bashrc
+
+# -----------------------------------------------------------------------------
+# Third-party typesupport directory
+# Populated at runtime — see scripts/setup_typesupport.sh
+# -----------------------------------------------------------------------------
+
+RUN mkdir -p /opt/topicfs_typesupport && \
+    chown -R $USERNAME:$HOST_GID /opt/topicfs_typesupport
 
 USER $USERNAME
 
-# Install ROS 2 dependencies
+# -----------------------------------------------------------------------------
+# ROS2 packages
+#
+# Kept strictly to what TopicFS itself needs:
+#   - ament build tooling for colcon builds inside the container
+#   - demo-nodes-cpp pulls in std_msgs and geometry_msgs, which are useful
+#     for smoke-testing TopicFS against ros2 topic pub without needing
+#     SwiftRos2 running
+#   - rosbag2 retained for potential future bag-replay / recording feature
+#
+# Everything related to robot control, visualization, kinematics, and
+# hardware interfaces belongs in the SwiftRos2 Dockerfile, not here.
+# -----------------------------------------------------------------------------
+
 RUN sudo apt-get update && \
     sudo apt-get install -y --no-install-recommends \
-    ros-jazzy-ament-cmake-clang-format \
-    ros-jazzy-ament-cmake-clang-tidy \
-    ros-jazzy-controller-interface \
-    ros-jazzy-controller-manager \
-    ros-jazzy-control-msgs \
-    ros-jazzy-demo-nodes-cpp \
-    ros-jazzy-generate-parameter-library \
-    ros-jazzy-hardware-interface \
-    ros-jazzy-joint-state-broadcaster \
-    ros-jazzy-joint-state-publisher \
-    ros-jazzy-joint-state-publisher-gui \
-    ros-jazzy-joint-trajectory-controller \
-    ros-jazzy-moveit-kinematics \
-    ros-jazzy-moveit-planners-ompl \
-    ros-jazzy-moveit-ros-move-group \
-    ros-jazzy-moveit-ros-visualization \
-    ros-jazzy-moveit-simple-controller-manager \
-    ros-jazzy-realtime-tools \
-    ros-jazzy-robot-state-publisher \
-    ros-jazzy-ros-gz \
-    ros-jazzy-ros2-control \
-    ros-jazzy-ros2-controllers \
-    ros-jazzy-ros2-control-test-assets \
-    ros-jazzy-ros2controlcli \
-    ros-jazzy-rviz2 \
-    ros-jazzy-sdformat-urdf \
-    ros-jazzy-tf2 \
-    ros-jazzy-tf2-ros \
-    ros-jazzy-xacro \
-    && sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/*
+        ros-jazzy-ament-cmake-clang-format \
+        ros-jazzy-ament-cmake-clang-tidy \
+        ros-jazzy-demo-nodes-cpp \
+        ros-jazzy-generate-parameter-library \
+        ros-jazzy-rosbag2 \
+    && sudo apt-get clean \
+    && sudo rm -rf /var/lib/apt/lists/*
 
-# Install missing ROS 2 dependencies
-RUN sudo apt-get update && \
-    sudo apt-get install -y --no-install-recommends \
-    ros-jazzy-rosbag2 \
-    && sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/*
+# -----------------------------------------------------------------------------
+# Shell and working directory
+# -----------------------------------------------------------------------------
 
-# Set the default shell to bash and the workdir to the source directory
-SHELL [ "/bin/bash", "-c" ]
-ENTRYPOINT []
+SHELL ["/bin/bash", "-c"]
 WORKDIR /home/jack/dev/smithjack.net
+ENTRYPOINT []

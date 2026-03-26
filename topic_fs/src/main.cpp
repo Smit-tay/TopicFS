@@ -18,15 +18,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "topic_fs/topicfs.hpp"
+
 #include <iostream>
+
+#include <rclcpp/rclcpp.hpp>
+
+#include "topic_fs/topicfs.hpp"
 
 int main(int argc, char* argv[]) {
   try {
     TopicFS filesystem(argc, argv);
     return filesystem.run();
   } catch (const std::exception& e) {
-    std::cerr << "Exception: " << e.what() << std::endl;
+    std::cerr << "Fatal: " << e.what() << std::endl;
     rclcpp::shutdown();
     return 1;
   }

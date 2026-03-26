@@ -1,22 +1,7 @@
+// topicfs_node.cpp
 // Copyright 2025 Jack Sidman Smith
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// Licensed under the MIT License. See LICENSE in project root.
 
 // Standard library
 #include <algorithm>
@@ -29,7 +14,7 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-// FUSE - kept separate due to version requirements
+// FUSE
 #include <fuse3/fuse.h>
 #include <fuse_lowlevel.h>
 
@@ -40,98 +25,116 @@
 // Local helpers
 // -----------------------------------------------------------------------------
 
+// Fallback encoder for message types whose typesupport .so is not available
+// at runtime. The raw CDR bytes are base64-encoded and stored as JSON so that
+// the data is at least accessible, even if not human-readable.
+// Once the correct .so is added to AMENT_PREFIX_PATH and setup.bash sourced,
+// the next received message will be stored as proper JSON instead.
 static std::string base64_encode(const uint8_t* data, size_t length)
 {
-  static const std::string base64_chars =
+  static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
   std::string encoded;
   encoded.reserve((length + 2) / 3 * 4);
 
   for (size_t i = 0; i < length; i += 3)
   {
-    uint32_t b = (data[i] << 16) |
-                 ((i + 1 < length ? data[i + 1] : 0) << 8) |
-                 (i + 2 < length ? data[i + 2] : 0);
+    uint32_t b = (static_cast<uint32_t>(data[i]) << 16) |
+                 ((i + 1 < length ? static_cast<uint32_t>(data[i + 1]) : 0u) << 8) |
+                  (i + 2 < length ? static_cast<uint32_t>(data[i + 2]) : 0u);
+
     encoded.push_back(base64_chars[(b >> 18) & 0x3F]);
     encoded.push_back(base64_chars[(b >> 12) & 0x3F]);
     encoded.push_back(i + 1 < length ? base64_chars[(b >> 6) & 0x3F] : '=');
-    encoded.push_back(i + 2 < length ? base64_chars[b & 0x3F] : '=');
+    encoded.push_back(i + 2 < length ? base64_chars[b        & 0x3F] : '=');
   }
 
   return encoded;
+}
+
+// Returns true if a service or topic name contains the ROS2 action internal
+// sub-path "/_action/".  These are currently exposed as raw services/topics
+// (Option B).  This predicate is the single place to change when proper action
+// support is implemented — at that point, callers will filter using this
+// function and discover_actions() will handle them instead.
+static bool is_action_internal(const std::string& name)
+{
+  return name.find("/_action/") != std::string::npos;
 }
 
 // -----------------------------------------------------------------------------
 // Constructor
 // -----------------------------------------------------------------------------
 
-topicfsNode::topicfsNode() : Node("ros2_fuse_node")
+topicfsNode::topicfsNode() : Node("topicfs_node")
 {
-  declare_parameter<std::vector<std::string>>("writable_topics", std::vector<std::string>{});
+  declare_parameter<std::vector<std::string>>("writable_topics",
+                                              std::vector<std::string>{});
   declare_parameter<int>("notification_interval_ms", 100);
   declare_parameter<int>("discovery_interval_ms", 1000);
 
+  // writable_topics can be passed as a string array or (for convenience on the
+  // command line) as a single string.  Handle both.
   try
   {
     get_parameter("writable_topics", writable_topics_);
-
-    int interval_ms;
-    get_parameter("notification_interval_ms", interval_ms);
-    notification_interval_ = std::chrono::milliseconds(interval_ms);
-    RCLCPP_INFO(this->get_logger(), "Notification interval set to %d ms", interval_ms);
-
-    get_parameter("discovery_interval_ms", discovery_interval_ms_);
-    RCLCPP_INFO(this->get_logger(), "Discovery interval set to %d ms", discovery_interval_ms_);
-    discovery_timer_ = create_wall_timer(
-        std::chrono::milliseconds(discovery_interval_ms_),
-        [this]() {
-                discover_topics();
-                discover_services();
-            });
-
   }
-  catch (const rclcpp::ParameterTypeException& e)
+  catch (const rclcpp::ParameterTypeException&)
   {
-    std::string single_topic;
+    std::string single;
     try
     {
-      declare_parameter<std::string>("writable_topics", "");
-      get_parameter("writable_topics", single_topic);
-      if (!single_topic.empty())
+      get_parameter("writable_topics", single);
+      if (!single.empty())
       {
-        writable_topics_ = {single_topic};
-        RCLCPP_INFO(this->get_logger(), "Converted single topic '%s' to array",
-                    single_topic.c_str());
+        writable_topics_ = {single};
+        RCLCPP_INFO(get_logger(),
+                    "writable_topics: converted single string '%s' to array",
+                    single.c_str());
       }
     }
     catch (const rclcpp::ParameterTypeException& e2)
     {
-      RCLCPP_ERROR(this->get_logger(),
-                   "Invalid type for 'writable_topics': %s. Expected string or string array.",
-                   e2.what());
+      RCLCPP_ERROR(get_logger(),
+                   "writable_topics: invalid type — %s", e2.what());
       throw;
     }
   }
 
-  RCLCPP_INFO(this->get_logger(), "Writable topics: %zu", writable_topics_.size());
-  for (const auto& topic : writable_topics_)
+  int interval_ms = 100;
+  get_parameter("notification_interval_ms", interval_ms);
+  notification_interval_ = std::chrono::milliseconds(interval_ms);
+
+  get_parameter("discovery_interval_ms", discovery_interval_ms_);
+
+  RCLCPP_INFO(get_logger(), "Notification interval : %d ms", interval_ms);
+  RCLCPP_INFO(get_logger(), "Discovery interval    : %d ms", discovery_interval_ms_);
+  RCLCPP_INFO(get_logger(), "Writable topics       : %zu", writable_topics_.size());
+  for (const auto& t : writable_topics_)
   {
-    RCLCPP_INFO(this->get_logger(), "  - %s", topic.c_str());
+    RCLCPP_INFO(get_logger(), "  writable: %s", t.c_str());
   }
+
+  discovery_timer_ = create_wall_timer(
+    std::chrono::milliseconds(discovery_interval_ms_),
+    [this]()
+    {
+      discover_topics();
+      discover_services();
+      // discover_actions() — reserved for future implementation
+    });
 }
 
 // -----------------------------------------------------------------------------
-// Public accessors - topic data
+// Public accessors — topic data
 // -----------------------------------------------------------------------------
 
 std::optional<std::string> topicfsNode::get_latest_message(const std::string& topic)
 {
   std::lock_guard<std::mutex> lock(messages_mutex_);
   auto it = latest_messages_.find(topic);
-  if (it == latest_messages_.end())
-  {
-    return std::nullopt;
-  }
+  if (it == latest_messages_.end()) { return std::nullopt; }
   return it->second;
 }
 
@@ -139,10 +142,7 @@ std::optional<std::string> topicfsNode::get_topic_type(const std::string& topic)
 {
   std::lock_guard<std::mutex> lock(messages_mutex_);
   auto it = topic_types_.find(topic);
-  if (it == topic_types_.end())
-  {
-    return std::nullopt;
-  }
+  if (it == topic_types_.end()) { return std::nullopt; }
   return it->second;
 }
 
@@ -150,31 +150,25 @@ uint64_t topicfsNode::get_message_version(const std::string& topic)
 {
   std::lock_guard<std::mutex> lock(messages_mutex_);
   auto it = message_versions_.find(topic);
-  if (it == message_versions_.end())
-  {
-    return 0;
-  }
+  if (it == message_versions_.end()) { return 0; }
   return it->second;
 }
 
 std::vector<std::string> topicfsNode::get_topics()
 {
   std::lock_guard<std::mutex> lock(messages_mutex_);
-  std::vector<std::string> topics;
-  for (const auto& pair : topic_types_)
+  std::vector<std::string> result;
+  result.reserve(topic_types_.size());
+  for (const auto& [topic, _] : topic_types_)
   {
-    std::string topic = pair.first;
-    if (!topic.empty() && topic[0] == '/')
-    {
-      topic = topic.substr(1);
-    }
-    topics.push_back(topic);
+    // Strip leading slash — FUSE paths are relative to the mount root
+    result.push_back(topic.empty() || topic[0] != '/' ? topic : topic.substr(1));
   }
-  return topics;
+  return result;
 }
 
 // -----------------------------------------------------------------------------
-// Public accessors - publishers
+// Public accessors — publishers
 // -----------------------------------------------------------------------------
 
 bool topicfsNode::has_publisher(const std::string& topic)
@@ -183,20 +177,18 @@ bool topicfsNode::has_publisher(const std::string& topic)
   return publishers_.count(topic) > 0;
 }
 
-bool topicfsNode::publish_message(const std::string& topic, rclcpp::SerializedMessage& msg)
+bool topicfsNode::publish_message(const std::string& topic,
+                                  rclcpp::SerializedMessage& msg)
 {
   std::lock_guard<std::mutex> lock(messages_mutex_);
   auto it = publishers_.find(topic);
-  if (it == publishers_.end() || !it->second)
-  {
-    return false;
-  }
+  if (it == publishers_.end() || !it->second) { return false; }
   it->second->publish(msg);
   return true;
 }
 
 // -----------------------------------------------------------------------------
-// Public accessors - poll handles
+// Public accessors — poll handles
 // -----------------------------------------------------------------------------
 
 void topicfsNode::store_poll_handle(const std::string& topic, fuse_pollhandle* ph)
@@ -205,7 +197,7 @@ void topicfsNode::store_poll_handle(const std::string& topic, fuse_pollhandle* p
   auto it = poll_handles_.find(topic);
   if (it != poll_handles_.end() && it->second)
   {
-    // Destroy any previously stored handle that was never consumed
+    // Destroy any handle that was stored but never consumed
     fuse_pollhandle_destroy(it->second);
   }
   poll_handles_[topic] = ph;
@@ -215,33 +207,27 @@ fuse_pollhandle* topicfsNode::take_poll_handle(const std::string& topic)
 {
   std::lock_guard<std::mutex> lock(poll_mutex_);
   auto it = poll_handles_.find(topic);
-  if (it == poll_handles_.end())
-  {
-    return nullptr;
-  }
+  if (it == poll_handles_.end()) { return nullptr; }
   fuse_pollhandle* ph = it->second;
   it->second = nullptr;
   return ph;
 }
 
 // -----------------------------------------------------------------------------
-// Public accessors - services
+// Public accessors — services
 // -----------------------------------------------------------------------------
 
 std::vector<std::string> topicfsNode::get_services()
 {
   std::lock_guard<std::mutex> lock(services_mutex_);
-  std::vector<std::string> services;
-  for (const auto& pair : service_types_)
+  std::vector<std::string> result;
+  result.reserve(service_types_.size());
+  for (const auto& [service, _] : service_types_)
   {
-    std::string service = pair.first;
-    if (!service.empty() && service[0] == '/')
-    {
-      service = service.substr(1);
-    }
-    services.push_back(service);
+    result.push_back(
+      service.empty() || service[0] != '/' ? service : service.substr(1));
   }
-  return services;
+  return result;
 }
 
 bool topicfsNode::has_service(const std::string& service)
@@ -254,12 +240,18 @@ std::optional<std::string> topicfsNode::get_last_response(const std::string& ser
 {
   std::lock_guard<std::mutex> lock(services_mutex_);
   auto it = last_responses_.find(service);
-  if (it == last_responses_.end())
-  {
-    return std::nullopt;
-  }
+  if (it == last_responses_.end()) { return std::nullopt; }
   return it->second;
 }
+
+// -----------------------------------------------------------------------------
+// Public — call_service
+//
+// Sends a JSON request to a ROS2 service and returns the JSON response.
+// Blocks the calling thread (a FUSE worker thread) for up to 10 seconds.
+// The ROS2 executor spinning in ros_thread_ processes the response while
+// this function polls the future.
+// -----------------------------------------------------------------------------
 
 std::string topicfsNode::call_service(
   const std::string& service, const nlohmann::json& request)
@@ -271,100 +263,102 @@ std::string topicfsNode::call_service(
     auto it = service_clients_.find(service);
     if (it == service_clients_.end())
     {
-      return R"({"error": "service not found"})";
+      return R"({"error":"service not found"})";
     }
-    client = it->second;
+    client       = it->second;
     service_type = service_types_[service];
   }
 
   if (!client->wait_for_service(std::chrono::seconds(2)))
   {
-    return R"({"error": "service not available"})";
+    return R"({"error":"service not available"})";
   }
 
-  // GenericClient::Request is void* pointing to raw message memory (not CDR).
-  // We must allocate the message struct, fill it from JSON, and pass the pointer.
+  // Build and fill the request message from JSON.
+  // Service request structs are generated by ROS2 as ordinary message structs
+  // and share the same typesupport/introspection conventions, so we use
+  // RosMessageConverter::get_type_support with the "_Request" suffix.
   std::string request_type = service_type + "_Request";
 
   const rosidl_message_type_support_t* ts =
     RosMessageConverter::get_type_support(request_type);
   if (!ts)
   {
-    return R"({"error": "failed to load request type support"})";
+    return R"({"error":"failed to load request typesupport — is the package .so on AMENT_PREFIX_PATH?"})";
   }
 
-  const rosidl_message_type_support_t* introspection_ts =
+  const rosidl_message_type_support_t* intr_ts =
     get_message_typesupport_handle(ts, "rosidl_typesupport_introspection_cpp");
-  if (!introspection_ts)
+  if (!intr_ts)
   {
-    return R"({"error": "failed to get introspection type support"})";
+    return R"({"error":"failed to get request introspection typesupport"})";
   }
 
   const auto* members =
     reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers*>(
-    introspection_ts->data);
+      intr_ts->data);
 
-  // Allocate and initialize request message memory
-  std::vector<uint8_t> request_buffer(members->size_of_);
-  members->init_function(request_buffer.data(),
+  std::vector<uint8_t> req_buf(members->size_of_);
+  members->init_function(req_buf.data(),
                          rosidl_runtime_cpp::MessageInitialization::ALL);
 
-  // Fill from JSON
-  if (!RosMessageConverter::json_to_members(members, request, request_buffer.data()))
+  if (!RosMessageConverter::json_to_members(members, request, req_buf.data()))
   {
-    members->fini_function(request_buffer.data());
-    return R"({"error": "failed to fill request from JSON"})";
+    members->fini_function(req_buf.data());
+    return R"({"error":"failed to fill request from JSON"})";
   }
 
-  // Send request — pass raw message memory pointer
-  auto future_and_id = client->async_send_request(
-    static_cast<void*>(request_buffer.data()));
+  // Send — GenericClient takes raw message memory (not CDR)
+  auto future_and_id =
+    client->async_send_request(static_cast<void*>(req_buf.data()));
 
-  // Wait for response — executor is spinning in ros_thread_
-  auto timeout = std::chrono::seconds(10);
+  // Poll the future while the ROS2 executor (ros_thread_) processes it.
+  // We do not call spin_until_future_complete here because this is already
+  // running on a FUSE worker thread, not the ROS2 thread.
+  constexpr auto timeout   = std::chrono::seconds(10);
+  constexpr auto poll_step = std::chrono::milliseconds(10);
   auto start = std::chrono::steady_clock::now();
-  while (future_and_id.future.wait_for(std::chrono::milliseconds(10)) !=
-         std::future_status::ready)
+
+  while (future_and_id.future.wait_for(poll_step) != std::future_status::ready)
   {
     if (std::chrono::steady_clock::now() - start > timeout)
     {
       client->remove_pending_request(future_and_id.request_id);
-      members->fini_function(request_buffer.data());
-      return R"({"error": "service call timed out"})";
+      members->fini_function(req_buf.data());
+      return R"({"error":"service call timed out"})";
     }
   }
 
-  members->fini_function(request_buffer.data());
+  members->fini_function(req_buf.data());
 
   auto response = future_and_id.future.get();
   if (!response)
   {
-    return R"({"error": "null response"})";
+    return R"({"error":"null response"})";
   }
 
-  // GenericClient response is also raw message memory (not CDR).
-  // Use introspection to deserialize directly from the response memory.
+  // Deserialize response — same introspection approach as request
   std::string response_type = service_type + "_Response";
 
   const rosidl_message_type_support_t* resp_ts =
     RosMessageConverter::get_type_support(response_type);
   if (!resp_ts)
   {
-    return R"({"error": "failed to load response type support"})";
+    return R"({"error":"failed to load response typesupport"})";
   }
 
-  const rosidl_message_type_support_t* resp_introspection_ts =
+  const rosidl_message_type_support_t* resp_intr_ts =
     get_message_typesupport_handle(resp_ts, "rosidl_typesupport_introspection_cpp");
-  if (!resp_introspection_ts)
+  if (!resp_intr_ts)
   {
-    return R"({"error": "failed to get response introspection type support"})";
+    return R"({"error":"failed to get response introspection typesupport"})";
   }
 
   const auto* resp_members =
     reinterpret_cast<const rosidl_typesupport_introspection_cpp::MessageMembers*>(
-    resp_introspection_ts->data);
+      resp_intr_ts->data);
 
-  // Response void* points to raw message memory — deserialize directly
+  // GenericClient response is raw message memory — deserialize directly
   nlohmann::json json_response = RosMessageConverter::members_to_json(
     resp_members, static_cast<const uint8_t*>(response.get()));
 
@@ -398,19 +392,17 @@ void topicfsNode::set_notification_interval(std::chrono::milliseconds interval)
 }
 
 // -----------------------------------------------------------------------------
-// Topic management
+// Topic management — subscribe_to_topic
 // -----------------------------------------------------------------------------
 
-void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::string& topic_type)
+void topicfsNode::subscribe_to_topic(
+  const std::string& topic_name, const std::string& topic_type)
 {
-    fprintf(stderr, "subscribe_to_topic: captured type='%s' len=%zu\n",
-            topic_type.c_str(), topic_type.size());
   {
     std::lock_guard<std::mutex> lock(messages_mutex_);
     if (subscriptions_.count(topic_name))
     {
-      RCLCPP_WARN(this->get_logger(), "Already subscribed to topic: %s", topic_name.c_str());
-      return;
+      return;  // Already subscribed — normal during repeated discovery timer ticks
     }
   }
 
@@ -421,135 +413,171 @@ void topicfsNode::subscribe_to_topic(const std::string& topic_name, const std::s
     qos.durability_volatile();
 
     auto sub = create_generic_subscription(
-  topic_name, topic_type, qos,
-  [this, topic_name, topic_type](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg)
-  {
-    RCLCPP_DEBUG(this->get_logger(), "Received message on topic: %s", topic_name.c_str());
-    const auto& buffer = serialized_msg->get_rcl_serialized_message();
-    if (buffer.buffer_length == 0 || !buffer.buffer)
-    {
-      RCLCPP_WARN(this->get_logger(), "Received empty message on topic: %s",
-                  topic_name.c_str());
-      return;
-    }
+      topic_name, topic_type, qos,
+      [this, topic_name, topic_type](
+        std::shared_ptr<rclcpp::SerializedMessage> serialized_msg)
+      {
+        const auto& buffer = serialized_msg->get_rcl_serialized_message();
+        if (buffer.buffer_length == 0 || !buffer.buffer)
+        {
+          RCLCPP_WARN(get_logger(),
+                      "subscribe: empty message on %s", topic_name.c_str());
+          return;
+        }
 
-    // Attempt human-readable JSON conversion via introspection
-    std::string stored;
-    auto json_result = RosMessageConverter::to_json(topic_type, *serialized_msg);
-    if (json_result.has_value())
-    {
-      stored = json_result->dump();
-    }
-    else
-    {
-      // Fall back to base64 for unknown or custom message types
-      RCLCPP_DEBUG(this->get_logger(),
-                   "Introspection failed for %s, falling back to base64",
-                   topic_type.c_str());
-      std::string encoded = base64_encode(buffer.buffer, buffer.buffer_length);
-      nlohmann::json j;
-      j["data"] = encoded;
-      stored = j.dump();
-    }
+        // Try human-readable JSON via typesupport introspection.
+        // Falls back to base64 if the .so is not yet available — the next
+        // message will retry automatically (cache miss triggers dlopen again).
+        std::string stored;
+        auto json_result = RosMessageConverter::to_json(topic_type, *serialized_msg);
+        if (json_result.has_value())
+        {
+          stored = json_result->dump();
+        }
+        else
+        {
+          RCLCPP_DEBUG(get_logger(),
+                       "subscribe: introspection unavailable for %s — "
+                       "storing base64 (source the package setup.bash to fix)",
+                       topic_type.c_str());
+          nlohmann::json j;
+          j["_encoding"] = "base64_cdr";
+          j["_type"]     = topic_type;
+          j["data"]      = base64_encode(buffer.buffer, buffer.buffer_length);
+          stored = j.dump();
+        }
 
-    uint64_t version;
+        uint64_t version;
+        {
+          std::lock_guard<std::mutex> lock(messages_mutex_);
+          latest_messages_[topic_name] = stored;
+          version = ++message_versions_[topic_name];
+        }
+
+        notify_file_change(topic_name, fuse_handle_);
+        RCLCPP_DEBUG(get_logger(), "subscribe: stored %s v%lu",
+                     topic_name.c_str(), version);
+      });
+
     {
       std::lock_guard<std::mutex> lock(messages_mutex_);
-      latest_messages_[topic_name] = stored;
-      version = ++message_versions_[topic_name];
-    }
-
-    notify_file_change(topic_name, fuse_handle_);
-    RCLCPP_DEBUG(this->get_logger(), "Stored message for %s (version %lu)",
-                 topic_name.c_str(), version);
-  });
-
-    {
-      std::lock_guard<std::mutex> lock(messages_mutex_);
-      subscriptions_[topic_name] = sub;
-      topic_types_[topic_name] = topic_type;
+      subscriptions_[topic_name]   = sub;
+      topic_types_[topic_name]     = topic_type;
       message_versions_[topic_name] = 0;
 
       if (std::find(writable_topics_.begin(), writable_topics_.end(), topic_name)
           != writable_topics_.end())
       {
-        auto pub = create_generic_publisher(topic_name, topic_type, qos);
-        publishers_[topic_name] = pub;
-        RCLCPP_INFO(this->get_logger(), "Created publisher for %s (%s)",
-                    topic_name.c_str(), topic_type.c_str());
+        publishers_[topic_name] =
+          create_generic_publisher(topic_name, topic_type, qos);
+        RCLCPP_INFO(get_logger(), "subscribe: publisher created for %s",
+                    topic_name.c_str());
       }
     }
 
-    RCLCPP_INFO(this->get_logger(),
-                "Subscribed to topic: %s (%s) with QoS reliable, volatile, keep-last-10",
+    RCLCPP_INFO(get_logger(), "Subscribed: %s  [%s]",
                 topic_name.c_str(), topic_type.c_str());
   }
   catch (const std::exception& e)
   {
-    RCLCPP_ERROR(this->get_logger(), "Failed to subscribe to topic %s (%s): %s",
+    RCLCPP_ERROR(get_logger(), "subscribe_to_topic: %s (%s): %s",
                  topic_name.c_str(), topic_type.c_str(), e.what());
   }
 }
 
-void topicfsNode::discover_services()
+// -----------------------------------------------------------------------------
+// Discovery — topics
+// -----------------------------------------------------------------------------
+
+void topicfsNode::discover_topics()
 {
-  // Skip internal ROS2 infrastructure services
-  static const std::set<std::string> ignored_prefixes = {
-    "/ros2_fuse_node/",
-    "/rosout/"
+  // ROS2 infrastructure topics — never useful to expose
+  static const std::set<std::string> ignored = {
+    "/rosout",
+    "/parameter_events"
   };
 
-  auto service_names_and_types = get_service_names_and_types();
-  RCLCPP_DEBUG(this->get_logger(), "discover_services: found %zu services",
-               service_names_and_types.size());
+  auto names_and_types = get_topic_names_and_types();
+  RCLCPP_DEBUG(get_logger(), "discover_topics: %zu topics visible",
+               names_and_types.size());
 
-  for (const auto& [service, types] : service_names_and_types)
+  for (const auto& [topic, types] : names_and_types)
   {
-    // Skip internal services
+    if (ignored.count(topic) || types.empty()) { continue; }
+
+    // Action internals are currently left visible as raw topics (Option B).
+    // When discover_actions() is implemented, add:
+    //   if (is_action_internal(topic)) { continue; }
+    (void)is_action_internal;  // suppress unused-function warning until then
+
+    {
+      std::lock_guard<std::mutex> lock(messages_mutex_);
+      if (subscriptions_.count(topic)) { continue; }
+    }
+
+    RCLCPP_INFO(get_logger(), "discover_topics: new topic %s  [%s]",
+                topic.c_str(), types[0].c_str());
+    subscribe_to_topic(topic, types[0]);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Discovery — services
+// -----------------------------------------------------------------------------
+
+void topicfsNode::discover_services()
+{
+  // Own-node services — never expose these
+  static const std::set<std::string> ignored_prefixes = {
+    "/topicfs_node/"
+  };
+
+  // Standard per-node ROS2 parameter services — filter by suffix
+  static const std::set<std::string> ignored_suffixes = {
+    "/describe_parameters",
+    "/get_parameter_types",
+    "/get_parameters",
+    "/get_type_description",
+    "/list_parameters",
+    "/set_parameters",
+    "/set_parameters_atomically"
+  };
+
+  auto names_and_types = get_service_names_and_types();
+  RCLCPP_DEBUG(get_logger(), "discover_services: %zu services visible",
+               names_and_types.size());
+
+  for (const auto& [service, types] : names_and_types)
+  {
+    if (types.empty()) { continue; }
+
     bool ignored = false;
+
     for (const auto& prefix : ignored_prefixes)
     {
-      if (service.rfind(prefix, 0) == 0)
-      {
-        ignored = true;
-        break;
-      }
+      if (service.rfind(prefix, 0) == 0) { ignored = true; break; }
     }
-    // Also skip any service ending in standard ROS2 node parameter suffixes
-    static const std::set<std::string> ignored_suffixes = {
-      "/describe_parameters",
-      "/get_parameter_types",
-      "/get_parameters",
-      "/get_type_description",
-      "/list_parameters",
-      "/set_parameters",
-      "/set_parameters_atomically"
-    };
+    if (ignored) { continue; }
+
     for (const auto& suffix : ignored_suffixes)
     {
       if (service.size() >= suffix.size() &&
-          service.compare(service.size() - suffix.size(), suffix.size(), suffix) == 0)
+          service.compare(service.size() - suffix.size(),
+                          suffix.size(), suffix) == 0)
       {
         ignored = true;
         break;
       }
     }
-    if (ignored)
-    {
-      continue;
-    }
+    if (ignored) { continue; }
 
-    if (types.empty())
-    {
-      continue;
-    }
+    // Action internals are currently left visible as raw services (Option B).
+    // When discover_actions() is implemented, add:
+    //   if (is_action_internal(service)) { continue; }
 
     {
       std::lock_guard<std::mutex> lock(services_mutex_);
-      if (service_clients_.count(service))
-      {
-        continue;
-      }
+      if (service_clients_.count(service)) { continue; }
     }
 
     try
@@ -558,64 +586,46 @@ void topicfsNode::discover_services()
       {
         std::lock_guard<std::mutex> lock(services_mutex_);
         service_clients_[service] = client;
-        service_types_[service] = types[0];
+        service_types_[service]   = types[0];
       }
-      RCLCPP_INFO(this->get_logger(), "Discovered service: %s (%s)",
+      RCLCPP_INFO(get_logger(), "discover_services: new service %s  [%s]",
                   service.c_str(), types[0].c_str());
     }
     catch (const std::exception& e)
     {
-      RCLCPP_ERROR(this->get_logger(), "Failed to create client for service %s: %s",
-                   service.c_str(), e.what());
-    }
-  }
-}
-
-void topicfsNode::discover_topics()
-{
-  auto topic_names_and_types = get_topic_names_and_types();
-  RCLCPP_DEBUG(this->get_logger(), "discover_topics: found %zu topics",
-              topic_names_and_types.size());
-
-  // Skip internal ROS2 infrastructure topics
-  static const std::set<std::string> ignored_topics = {
-    "/rosout",
-    "/parameter_events"
-  };
-             
-  std::set<std::string> seen_topics;
-  for (const auto& [topic, types] : topic_names_and_types)
-  {
-      // SKip ignored topics
-    if (ignored_topics.count(topic))
-    {
-      continue;
-    }
-    if (!types.empty() && seen_topics.insert(topic).second)
-    {
-      {
-        std::lock_guard<std::mutex> lock(messages_mutex_);
-        if (subscriptions_.count(topic))
-        {
-          continue;
-        }
-      }
-      RCLCPP_INFO(this->get_logger(), "Found topic: %s, type: %s",
-                  topic.c_str(), types[0].c_str());
-      subscribe_to_topic(topic, types[0]);
+      RCLCPP_ERROR(get_logger(), "discover_services: failed to create client "
+                                 "for %s: %s", service.c_str(), e.what());
     }
   }
 }
 
 // -----------------------------------------------------------------------------
-// Private - notification
+// Discovery — actions (stub)
+// -----------------------------------------------------------------------------
+
+void topicfsNode::discover_actions()
+{
+  // Not yet implemented.
+  // When implemented, this method will:
+  //   1. Call get_action_names_and_types() (rclcpp_action, Jazzy+)
+  //   2. Filter out already-known actions
+  //   3. Expose each action as a directory with:
+  //        send_goal / cancel / result / feedback / status
+  // At that point, is_action_internal() will be used in discover_topics() and
+  // discover_services() to suppress the raw /_action/ entries, and the
+  // discovery_timer_ callback will call discover_actions() instead of (void)ing it.
+}
+
+// -----------------------------------------------------------------------------
+// Private — notify_file_change
 // -----------------------------------------------------------------------------
 
 void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle)
 {
   if (!fuse_handle)
   {
-    RCLCPP_ERROR(this->get_logger(), "notify: no FUSE handle available");
+    RCLCPP_DEBUG(get_logger(),
+                 "notify: FUSE handle not yet set for %s", topic.c_str());
     return;
   }
 
@@ -625,33 +635,31 @@ void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle
     auto& last_time = last_notification_[topic];
     if (now - last_time < notification_interval_)
     {
-      RCLCPP_DEBUG(this->get_logger(), "notify: throttled for %s", topic.c_str());
+      RCLCPP_DEBUG(get_logger(), "notify: throttled for %s", topic.c_str());
       return;
     }
     last_time = now;
   }
 
-  // Invalidate kernel page cache for the latest file
+  // Invalidate the kernel page cache entry for <topic>/latest so that the
+  // next read() call hits the FUSE handler rather than returning stale data.
+  // The inode number must match what topicfs_getattr() returns for this path.
   struct fuse_session* session = fuse_get_session(fuse_handle);
-  ino_t st_ino = 1 + std::hash<std::string>{}("/" + topic.substr(1) + "/latest");
-  int ret = fuse_lowlevel_notify_inval_inode(session, st_ino, 0, 0);
+  ino_t ino = 1 + std::hash<std::string>{}("/" + topic.substr(1) + "/latest");
+  int ret = fuse_lowlevel_notify_inval_inode(session, ino, 0, 0);
   if (ret != 0 && ret != -ENOENT)
   {
-    RCLCPP_ERROR(this->get_logger(),
-                 "notify: failed to invalidate inode for %s: %s (errno=%d)",
-                 topic.c_str(), strerror(-ret), ret);
-  }
-  else
-  {
-    RCLCPP_DEBUG(this->get_logger(), "notify: invalidated inode for %s", topic.c_str());
+    RCLCPP_DEBUG(get_logger(),
+                 "notify: inval_inode failed for %s: %s",
+                 topic.c_str(), strerror(-ret));
   }
 
-  // Wake any tail -f / poll() waiter on this topic
+  // Wake any poll() / select() waiter (e.g. tail -f) on this topic
   fuse_pollhandle* ph = take_poll_handle(topic);
   if (ph)
   {
     fuse_notify_poll(ph);
     fuse_pollhandle_destroy(ph);
-    RCLCPP_DEBUG(this->get_logger(), "notify: woke poll waiter for %s", topic.c_str());
+    RCLCPP_DEBUG(get_logger(), "notify: woke poll waiter for %s", topic.c_str());
   }
 }

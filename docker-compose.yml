@@ -1,3 +1,6 @@
+x-podman:
+  in_pod: false
+
 services:
   topicfs:
     build:
