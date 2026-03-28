@@ -5,13 +5,14 @@ services:
   topicfs:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
       args:
         - HOST_UID=${UID:-1000}
         - HOST_GID=${GID:-1000}
         - USERNAME=${USER:-$(id -un)}
-    container_name: topicfs
+    container_name: topicfs_dev
     hostname: topicfs-container
+    image: localhost/topicfs_dev:latest
     userns_mode: "keep-id"
     network_mode: "host"
     privileged: true

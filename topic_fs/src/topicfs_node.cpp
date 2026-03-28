@@ -450,7 +450,7 @@ void topicfsNode::subscribe_to_topic(
         uint64_t version;
         {
           std::lock_guard<std::mutex> lock(messages_mutex_);
-          latest_messages_[topic_name] = stored;
+          latest_messages_[topic_name] = stored + "\n";
           version = ++message_versions_[topic_name];
         }
 
@@ -645,7 +645,7 @@ void topicfsNode::notify_file_change(const std::string& topic, fuse* fuse_handle
   // next read() call hits the FUSE handler rather than returning stale data.
   // The inode number must match what topicfs_getattr() returns for this path.
   struct fuse_session* session = fuse_get_session(fuse_handle);
-  ino_t ino = 1 + std::hash<std::string>{}("/" + topic.substr(1) + "/latest");
+  ino_t ino = 1 + std::hash<std::string>{}(topic + "/latest");
   int ret = fuse_lowlevel_notify_inval_inode(session, ino, 0, 0);
   if (ret != 0 && ret != -ENOENT)
   {
