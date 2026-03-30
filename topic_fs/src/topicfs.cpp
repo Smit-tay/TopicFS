@@ -69,7 +69,8 @@ bool TopicFS::initialize_ros(int argc, char* argv[])
     rclcpp::init(argc, argv);
     ros2_node_ = std::make_shared<topicfsNode>();
     RCLCPP_INFO(ros2_node_->get_logger(),
-                "TopicFS — ROS2 FUSE filesystem — Jack Sidman Smith");
+                "TopicFS — ROS2 FUSE filesystem — Jack Sidman Smith — built %s %s",
++                __DATE__, __TIME__);
     return true;
   }
   catch (const std::exception& e)
