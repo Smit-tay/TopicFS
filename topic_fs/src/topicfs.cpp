@@ -340,7 +340,6 @@ int TopicFS::run()
   ros_thread_ = std::thread([this]()
   {
     rclcpp::spin(ros2_node_);
-    rclcpp::shutdown();
   });
 
   run_fuse_loop();

@@ -13,6 +13,8 @@
 // Third-party
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <rcl_action/graph.h>
 
 // FUSE
 #include <fuse3/fuse.h>
@@ -54,10 +56,8 @@ static std::string base64_encode(const uint8_t* data, size_t length)
 }
 
 // Returns true if a service or topic name contains the ROS2 action internal
-// sub-path "/_action/".  These are currently exposed as raw services/topics
-// (Option B).  This predicate is the single place to change when proper action
-// support is implemented — at that point, callers will filter using this
-// function and discover_actions() will handle them instead.
+// sub-path "/_action/". Used to filter raw action primitives from the topic
+// and service discovery paths — they are instead handled by discover_actions().
 static bool is_action_internal(const std::string& name)
 {
   return name.find("/_action/") != std::string::npos;
@@ -72,7 +72,7 @@ topicfsNode::topicfsNode() : Node("topicfs_node")
   declare_parameter<std::vector<std::string>>("writable_topics",
                                               std::vector<std::string>{});
   declare_parameter<int>("notification_interval_ms", 100);
-  declare_parameter<int>("discovery_interval_ms", 1000);
+  declare_parameter<int>("discovery_interval_ms", 10000);
 
   // writable_topics can be passed as a string array or (for convenience on the
   // command line) as a single string.  Handle both.
@@ -120,9 +120,9 @@ topicfsNode::topicfsNode() : Node("topicfs_node")
     std::chrono::milliseconds(discovery_interval_ms_),
     [this]()
     {
+      discover_actions();   // must run before topics/services so filters work
       discover_topics();
       discover_services();
-      // discover_actions() — reserved for future implementation
     });
 }
 
@@ -241,6 +241,39 @@ std::optional<std::string> topicfsNode::get_last_response(const std::string& ser
   std::lock_guard<std::mutex> lock(services_mutex_);
   auto it = last_responses_.find(service);
   if (it == last_responses_.end()) { return std::nullopt; }
+  return it->second;
+}
+
+// -----------------------------------------------------------------------------
+// Public accessors — actions
+// -----------------------------------------------------------------------------
+
+std::vector<std::string> topicfsNode::get_actions()
+{
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  std::vector<std::string> result;
+  result.reserve(known_actions_.size());
+  for (const auto& [name, _] : known_actions_)
+  {
+    // Strip leading slash — FUSE paths are relative to the mount root
+    result.push_back(name.empty() || name[0] != '/' ? name : name.substr(1));
+  }
+  return result;
+}
+
+bool topicfsNode::has_action(const std::string& action)
+{
+  std::string key = (action.empty() || action[0] != '/') ? "/" + action : action;
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  return known_actions_.count(key) > 0;
+}
+
+std::optional<ActionEntry> topicfsNode::get_action_entry(const std::string& action)
+{
+  std::string key = (action.empty() || action[0] != '/') ? "/" + action : action;
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  auto it = known_actions_.find(key);
+  if (it == known_actions_.end()) { return std::nullopt; }
   return it->second;
 }
 
@@ -486,6 +519,114 @@ void topicfsNode::subscribe_to_topic(
 }
 
 // -----------------------------------------------------------------------------
+// Discovery — actions
+//
+// Uses rcl_action_get_names_and_types() — the official C API.
+// For each discovered action, subscribes to its feedback and status topics
+// and creates service clients for send_goal, cancel_goal, and get_result.
+// These reuse the existing topic/service infrastructure unchanged.
+// Once known, the action's /_action/ primitives are filtered from
+// discover_topics() and discover_services() so they don't appear in the
+// filesystem as raw entries.
+// -----------------------------------------------------------------------------
+
+void topicfsNode::discover_actions()
+{
+  rcl_names_and_types_t nat = rcl_get_zero_initialized_names_and_types();
+  rcl_allocator_t allocator  = rcl_get_default_allocator();
+  const rcl_ret_t ret = rcl_action_get_names_and_types(
+    get_node_base_interface()->get_rcl_node_handle(), &allocator, &nat);
+  if (ret != RCL_RET_OK) { return; }
+
+  std::map<std::string, std::vector<std::string>> names_and_types;
+  for (size_t i = 0; i < nat.names.size; ++i)
+  {
+    std::vector<std::string> types;
+    for (size_t j = 0; j < nat.types[i].size; ++j)
+    {
+      types.push_back(nat.types[i].data[j]);
+    }
+    names_and_types[nat.names.data[i]] = types;
+  }
+   if (rcl_names_and_types_fini(&nat) != RCL_RET_OK)
+  {
+    RCLCPP_WARN(get_logger(), "discover_actions: failed to free names and types");
+  }
+
+  for (const auto& [action_name, types] : names_and_types)
+  {
+    if (types.empty()) { continue; }
+
+    {
+      std::lock_guard<std::mutex> lock(services_mutex_);
+      if (known_actions_.count(action_name)) { continue; }
+    }
+
+    RCLCPP_INFO(get_logger(), "discover_actions: new action %s  [%s]",
+                action_name.c_str(), types[0].c_str());
+
+    // Derive the five underlying primitive names from the action name
+    const std::string send_goal  = action_name + "/_action/send_goal";
+    const std::string cancel     = action_name + "/_action/cancel_goal";
+    const std::string get_result = action_name + "/_action/get_result";
+    const std::string feedback   = action_name + "/_action/feedback";
+    const std::string status     = action_name + "/_action/status";
+
+    // Subscribe to feedback and status topics
+    auto all_topics = get_topic_names_and_types();
+    for (const auto& [tname, ttypes] : all_topics)
+    {
+      if ((tname == feedback || tname == status) && !ttypes.empty())
+      {
+        subscribe_to_topic(tname, ttypes[0]);
+      }
+    }
+
+    // Create service clients for the three action services
+    auto all_services = get_service_names_and_types();
+    for (const auto& [sname, stypes] : all_services)
+    {
+      if ((sname == send_goal || sname == cancel || sname == get_result)
+          && !stypes.empty())
+      {
+        std::lock_guard<std::mutex> lock(services_mutex_);
+        if (!service_clients_.count(sname))
+        {
+          try
+          {
+            auto client = create_generic_client(sname, stypes[0]);
+            service_clients_[sname] = client;
+            service_types_[sname]   = stypes[0];
+            RCLCPP_INFO(get_logger(),
+                        "discover_actions: client created for %s", sname.c_str());
+          }
+          catch (const std::exception& e)
+          {
+            RCLCPP_ERROR(get_logger(),
+                         "discover_actions: failed client for %s: %s",
+                         sname.c_str(), e.what());
+          }
+        }
+      }
+    }
+
+    // Register the action entry
+    ActionEntry entry;
+    entry.action_name = action_name;
+    entry.send_goal   = send_goal;
+    entry.cancel_goal = cancel;
+    entry.get_result  = get_result;
+    entry.feedback    = feedback;
+    entry.status      = status;
+
+    {
+      std::lock_guard<std::mutex> lock(services_mutex_);
+      known_actions_[action_name] = entry;
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Discovery — topics
 // -----------------------------------------------------------------------------
 
@@ -505,10 +646,8 @@ void topicfsNode::discover_topics()
   {
     if (ignored.count(topic) || types.empty()) { continue; }
 
-    // Action internals are currently left visible as raw topics (Option B).
-    // When discover_actions() is implemented, add:
-    //   if (is_action_internal(topic)) { continue; }
-    (void)is_action_internal;  // suppress unused-function warning until then
+    // Action internals are handled by discover_actions() — suppress raw entries
+    if (is_action_internal(topic)) { continue; }
 
     {
       std::lock_guard<std::mutex> lock(messages_mutex_);
@@ -571,9 +710,8 @@ void topicfsNode::discover_services()
     }
     if (ignored) { continue; }
 
-    // Action internals are currently left visible as raw services (Option B).
-    // When discover_actions() is implemented, add:
-    //   if (is_action_internal(service)) { continue; }
+    // Action internals are handled by discover_actions() — suppress raw entries
+    if (is_action_internal(service)) { continue; }
 
     {
       std::lock_guard<std::mutex> lock(services_mutex_);
@@ -597,23 +735,6 @@ void topicfsNode::discover_services()
                                  "for %s: %s", service.c_str(), e.what());
     }
   }
-}
-
-// -----------------------------------------------------------------------------
-// Discovery — actions (stub)
-// -----------------------------------------------------------------------------
-
-void topicfsNode::discover_actions()
-{
-  // Not yet implemented.
-  // When implemented, this method will:
-  //   1. Call get_action_names_and_types() (rclcpp_action, Jazzy+)
-  //   2. Filter out already-known actions
-  //   3. Expose each action as a directory with:
-  //        send_goal / cancel / result / feedback / status
-  // At that point, is_action_internal() will be used in discover_topics() and
-  // discover_services() to suppress the raw /_action/ entries, and the
-  // discovery_timer_ callback will call discover_actions() instead of (void)ing it.
 }
 
 // -----------------------------------------------------------------------------

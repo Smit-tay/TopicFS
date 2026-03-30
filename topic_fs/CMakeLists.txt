@@ -20,6 +20,8 @@ endif()
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rcl_action REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosidl_runtime_cpp REQUIRED)
@@ -74,6 +76,8 @@ target_compile_options(topic_fs PRIVATE ${FUSE_CFLAGS_OTHER})
 # containing install prefix is on AMENT_PREFIX_PATH (i.e. setup.bash sourced).
 ament_target_dependencies(topic_fs
   rclcpp
+  rclcpp_action
+  rcl_action
   rmw
   rosidl_runtime_cpp
   rosidl_typesupport_introspection_cpp

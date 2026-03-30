@@ -14,6 +14,8 @@
   <!-- ROS 2 dependencies -->
   <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rcl_action</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosidl_runtime_cpp</depend>
   <depend>std_msgs</depend>

@@ -26,6 +26,21 @@
 // Project
 #include "topic_fs/ros_message_converter.hpp"
 
+// Describes a discovered ROS2 action in terms of its underlying primitives.
+// The five components (three services + two topics) are stored using the same
+// key format used by service_clients_ and topic_types_ respectively, so that
+// existing call_service() and get_latest_message() infrastructure is reused
+// without modification.
+struct ActionEntry
+{
+  std::string action_name;    // e.g. "/swiftpro/move_arm"
+  std::string send_goal;      // service key: action_name + "/_action/send_goal"
+  std::string cancel_goal;    // service key: action_name + "/_action/cancel_goal"
+  std::string get_result;     // service key: action_name + "/_action/get_result"
+  std::string feedback;       // topic key:   action_name + "/_action/feedback"
+  std::string status;         // topic key:   action_name + "/_action/status"
+};
+
 class topicfsNode : public rclcpp::Node
 {
 public:
@@ -51,6 +66,11 @@ public:
   std::string                call_service(const std::string& service,
                                           const nlohmann::json& request);
   std::optional<std::string> get_last_response(const std::string& service);
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  std::vector<std::string>            get_actions();
+  bool                                has_action(const std::string& action);
+  std::optional<ActionEntry>          get_action_entry(const std::string& action);
 
   // ── Configuration ──────────────────────────────────────────────────────────
   void set_fuse_handle(fuse* handle);
@@ -79,6 +99,11 @@ private:
   std::map<std::string, std::string>                               service_types_;
   std::unordered_map<std::string, std::string>                     last_responses_;
 
+  // ── Action state ───────────────────────────────────────────────────────────
+  // Protected by services_mutex_ — actions reuse the service and topic
+  // infrastructure, so no separate mutex is needed.
+  std::map<std::string, ActionEntry>                               known_actions_;
+
   // ── Node state ─────────────────────────────────────────────────────────────
   fuse*                              fuse_handle_{nullptr};
   std::string                        mount_point_;
@@ -97,15 +122,7 @@ private:
   // ── Private methods ────────────────────────────────────────────────────────
   void discover_topics();
   void discover_services();
-
-  // Actions are currently exposed as raw /_action/ services and topics —
-  // they appear in the filesystem and are interactable but not ergonomic.
-  // discover_actions() is reserved for a future task that will implement
-  // proper action support using a goal/feedback/result directory structure.
-  // At that point, /_action/ internals will be filtered from discover_topics()
-  // and discover_services() and replaced by the action abstraction.
-  void discover_actions();  // stub — not yet implemented
-
+  void discover_actions();
   void notify_file_change(const std::string& topic, fuse* fuse_handle);
 };
 

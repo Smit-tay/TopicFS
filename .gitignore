@@ -7,3 +7,6 @@ install/
 compile_commands.json
 .cache/
 podman.log
+*.csv
+*.log
+podman.log

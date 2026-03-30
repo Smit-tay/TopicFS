@@ -61,11 +61,12 @@ int topicfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_info*
 
   auto topics   = ros2_node->get_topics();
   auto services = ros2_node->get_services();
+  auto actions  = ros2_node->get_actions();
   std::string path_no_slash = spath.substr(1);
 
   stbuf->st_ino = 1 + std::hash<std::string>{}(spath);
 
-  // Check if this path is a directory prefix of any known topic or service
+  // Check if this path is a directory prefix of any known topic, service, or action
   auto is_dir_prefix = [&](const std::vector<std::string>& names) -> bool
   {
     return std::any_of(names.begin(), names.end(), [&](const auto& n) {
@@ -74,13 +75,32 @@ int topicfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_info*
     });
   };
 
-  if (is_dir_prefix(topics) || is_dir_prefix(services))
+  if (is_dir_prefix(topics) || is_dir_prefix(services) || is_dir_prefix(actions))
   {
     stbuf->st_mode  = S_IFDIR | 0755;
     stbuf->st_nlink = 2;
     return 0;
   }
-
+   // Action sub-directories (send_goal, cancel, get_result, feedback, status)
+   // are directories — recognise them before split_path strips the last component.
+   {
+     size_t last_slash = path_no_slash.rfind('/');
+     if (last_slash != std::string::npos)
+     {
+       std::string action_path = path_no_slash.substr(0, last_slash);
+       std::string sub         = path_no_slash.substr(last_slash + 1);
+       if (ros2_node->has_action("/" + action_path))
+       {
+         if (sub == "send_goal" || sub == "cancel" || sub == "get_result" ||
+             sub == "feedback"  || sub == "status")
+         {
+           stbuf->st_mode  = S_IFDIR | 0755;
+           stbuf->st_nlink = 2;
+           return 0;
+         }
+       }
+     }
+   }
   std::string name, file;
   if (!split_path(spath, name, file))
   {
@@ -88,6 +108,76 @@ int topicfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_info*
   }
 
   std::string original = "/" + name;
+
+  // ── Action files ───────────────────────────────────────────────────────────
+  // Action directories contain: send_goal/, cancel/, get_result/ (service dirs)
+  // and feedback/, status/ (topic dirs). Each of those sub-dirs contains the
+  // standard command/response or latest/info files respectively.
+  // The path structure is: /<action_name>/<sub>/<file>
+  // Split further: name = "<action_name>/<sub>", file = "command|response|latest|info"
+  {
+    size_t last_slash = name.rfind('/');
+    if (last_slash != std::string::npos)
+    {
+      std::string action_path = name.substr(0, last_slash);
+      std::string sub         = name.substr(last_slash + 1);
+
+      if (ros2_node->has_action("/" + action_path))
+      {
+        auto entry = ros2_node->get_action_entry("/" + action_path);
+        if (entry)
+        {
+          // feedback and status are topics — latest + info files
+          if (sub == "feedback" || sub == "status")
+          {
+            if (file == "latest")
+            {
+              stbuf->st_mode  = S_IFREG | 0444;
+              stbuf->st_nlink = 1;
+              stbuf->st_mtime = time(nullptr);
+              std::string topic_key = (sub == "feedback")
+                ? entry->feedback : entry->status;
+              auto msg = ros2_node->get_latest_message(topic_key);
+              stbuf->st_size = msg ? static_cast<off_t>(msg->size()) : 0;
+              return 0;
+            }
+            if (file == "info")
+            {
+              stbuf->st_mode  = S_IFREG | 0444;
+              stbuf->st_nlink = 1;
+              stbuf->st_mtime = time(nullptr);
+              stbuf->st_size  = 64;  // approximate
+              return 0;
+            }
+          }
+          // send_goal, cancel, get_result are services — command + response files
+          if (sub == "send_goal" || sub == "cancel" || sub == "get_result")
+          {
+            if (file == "command")
+            {
+              stbuf->st_mode  = S_IFREG | 0222;
+              stbuf->st_nlink = 1;
+              stbuf->st_size  = 0;
+              stbuf->st_mtime = time(nullptr);
+              return 0;
+            }
+            if (file == "response")
+            {
+              stbuf->st_mode  = S_IFREG | 0444;
+              stbuf->st_nlink = 1;
+              stbuf->st_mtime = time(nullptr);
+              std::string svc_key = (sub == "send_goal") ? entry->send_goal
+                                  : (sub == "cancel")    ? entry->cancel_goal
+                                                         : entry->get_result;
+              auto resp = ros2_node->get_last_response(svc_key);
+              stbuf->st_size = resp ? static_cast<off_t>(resp->size()) : 0;
+              return 0;
+            }
+          }
+        }
+      }
+    }
+  }
 
   // ── Topic files ────────────────────────────────────────────────────────────
   if (std::find(topics.begin(), topics.end(), name) != topics.end())
@@ -174,6 +264,7 @@ int topicfs_readdir(
 
   auto topics   = ros2_node->get_topics();
   auto services = ros2_node->get_services();
+  auto actions  = ros2_node->get_actions();
 
   // ── Root directory ─────────────────────────────────────────────────────────
   if (spath == "/")
@@ -195,6 +286,11 @@ int topicfs_readdir(
       size_t pos = s.find('/');
       top_level.insert(pos == std::string::npos ? s : s.substr(0, pos));
     }
+    for (const auto& a : actions)
+    {
+      size_t pos = a.find('/');
+      top_level.insert(pos == std::string::npos ? a : a.substr(0, pos));
+    }
     for (const auto& entry : top_level)
     {
       if (filler(buf, entry.c_str(), nullptr, 0, zero_fill_dir_flags))
@@ -206,6 +302,59 @@ int topicfs_readdir(
   }
 
   std::string path_no_slash = spath.substr(1);
+
+  // ── Exact action directory — show the five sub-directories ─────────────────
+  if (std::find(actions.begin(), actions.end(), path_no_slash) != actions.end())
+  {
+    if (filler(buf, ".",        nullptr, 0, zero_fill_dir_flags) ||
+        filler(buf, "..",       nullptr, 0, zero_fill_dir_flags) ||
+        filler(buf, "send_goal",nullptr, 0, zero_fill_dir_flags) ||
+        filler(buf, "cancel",   nullptr, 0, zero_fill_dir_flags) ||
+        filler(buf, "get_result",nullptr,0, zero_fill_dir_flags) ||
+        filler(buf, "feedback", nullptr, 0, zero_fill_dir_flags) ||
+        filler(buf, "status",   nullptr, 0, zero_fill_dir_flags))
+    {
+      return -ENOMEM;
+    }
+    return 0;
+  }
+
+  // ── Action sub-directory — show command/response or latest/info ────────────
+  {
+    size_t last_slash = path_no_slash.rfind('/');
+    if (last_slash != std::string::npos)
+    {
+      std::string action_path = path_no_slash.substr(0, last_slash);
+      std::string sub         = path_no_slash.substr(last_slash + 1);
+
+      if (ros2_node->has_action("/" + action_path))
+      {
+        if (filler(buf, ".", nullptr, 0, zero_fill_dir_flags) ||
+            filler(buf, "..",nullptr, 0, zero_fill_dir_flags))
+        {
+          return -ENOMEM;
+        }
+
+        if (sub == "feedback" || sub == "status")
+        {
+          if (filler(buf, "latest", nullptr, 0, zero_fill_dir_flags) ||
+              filler(buf, "info",   nullptr, 0, zero_fill_dir_flags))
+          {
+            return -ENOMEM;
+          }
+        }
+        else if (sub == "send_goal" || sub == "cancel" || sub == "get_result")
+        {
+          if (filler(buf, "command",  nullptr, 0, zero_fill_dir_flags) ||
+              filler(buf, "response", nullptr, 0, zero_fill_dir_flags))
+          {
+            return -ENOMEM;
+          }
+        }
+        return 0;
+      }
+    }
+  }
 
   // ── Exact topic directory ──────────────────────────────────────────────────
   if (std::find(topics.begin(), topics.end(), path_no_slash) != topics.end())
@@ -265,6 +414,17 @@ int topicfs_readdir(
       subdirs.insert(pos == std::string::npos ? rest : rest.substr(0, pos));
     }
   }
+  for (const auto& a : actions)
+  {
+    if (a.compare(0, path_no_slash.length(), path_no_slash) == 0 &&
+        a.length() > path_no_slash.length() &&
+        a[path_no_slash.length()] == '/')
+    {
+      std::string rest = a.substr(path_no_slash.length() + 1);
+      size_t pos = rest.find('/');
+      subdirs.insert(pos == std::string::npos ? rest : rest.substr(0, pos));
+    }
+  }
 
   if (!subdirs.empty())
   {
@@ -305,6 +465,45 @@ int topicfs_open(const char* path, struct fuse_file_info* fi)
   std::string original = "/" + name;
   auto topics   = ros2_node->get_topics();
   auto services = ros2_node->get_services();
+
+  // ── Action sub-directory files ─────────────────────────────────────────────
+  {
+    size_t last_slash = name.rfind('/');
+    if (last_slash != std::string::npos)
+    {
+      std::string action_path = name.substr(0, last_slash);
+      std::string sub         = name.substr(last_slash + 1);
+
+      if (ros2_node->has_action("/" + action_path))
+      {
+        if (sub == "feedback" || sub == "status")
+        {
+          if (file == "latest" || file == "info")
+          {
+            if ((fi->flags & O_ACCMODE) != O_RDONLY) { return -EACCES; }
+            fi->direct_io = 1;
+            return 0;
+          }
+        }
+        if (sub == "send_goal" || sub == "cancel" || sub == "get_result")
+        {
+          if (file == "command")
+          {
+            if ((fi->flags & O_ACCMODE) != O_WRONLY &&
+                (fi->flags & O_ACCMODE) != O_RDWR) { return -EACCES; }
+            return 0;
+          }
+          if (file == "response")
+          {
+            if ((fi->flags & O_ACCMODE) != O_RDONLY) { return -EACCES; }
+            fi->direct_io = 1;
+            return 0;
+          }
+        }
+        return -ENOENT;
+      }
+    }
+  }
 
   // ── Topic files ────────────────────────────────────────────────────────────
   if (std::find(topics.begin(), topics.end(), name) != topics.end())
@@ -430,6 +629,63 @@ int topicfs_read(
 
   std::string original = "/" + name;
 
+  // ── Action files ───────────────────────────────────────────────────────────
+  {
+    size_t last_slash = name.rfind('/');
+    if (last_slash != std::string::npos)
+    {
+      std::string action_path = name.substr(0, last_slash);
+      std::string sub         = name.substr(last_slash + 1);
+
+      if (ros2_node->has_action("/" + action_path))
+      {
+        auto entry = ros2_node->get_action_entry("/" + action_path);
+        if (!entry) { return -ENOENT; }
+
+        std::string data;
+
+        if (sub == "feedback" || sub == "status")
+        {
+          std::string topic_key = (sub == "feedback")
+            ? entry->feedback : entry->status;
+
+          if (file == "latest")
+          {
+            auto msg = ros2_node->get_latest_message(topic_key);
+            if (!msg) { return -ENOENT; }
+            data = *msg;
+          }
+          else if (file == "info")
+          {
+            auto type = ros2_node->get_topic_type(topic_key);
+            data = "Topic: " + topic_key + "\nType: " +
+                   type.value_or("unknown") + "\n";
+          }
+          else { return -ENOENT; }
+        }
+        else if (sub == "send_goal" || sub == "cancel" || sub == "get_result")
+        {
+          if (file == "response")
+          {
+            std::string svc_key = (sub == "send_goal") ? entry->send_goal
+                                : (sub == "cancel")    ? entry->cancel_goal
+                                                       : entry->get_result;
+            auto resp = ros2_node->get_last_response(svc_key);
+            static const std::string no_response = R"({"status":"no response yet"})";
+            data = resp ? *resp : no_response;
+          }
+          else { return -ENOENT; }
+        }
+        else { return -ENOENT; }
+
+        if (static_cast<size_t>(offset) >= data.size()) { return 0; }
+        size_t len = std::min(size, data.size() - static_cast<size_t>(offset));
+        memcpy(buf, data.c_str() + offset, len);
+        return static_cast<int>(len);
+      }
+    }
+  }
+
   // ── latest ─────────────────────────────────────────────────────────────────
   if (file == "latest")
   {
@@ -507,6 +763,52 @@ int topicfs_write(
 
   std::string original = "/" + name;
   std::string data(buf, size);
+
+  // ── Action command ─────────────────────────────────────────────────────────
+  {
+    size_t last_slash = name.rfind('/');
+    if (last_slash != std::string::npos)
+    {
+      std::string action_path = name.substr(0, last_slash);
+      std::string sub         = name.substr(last_slash + 1);
+
+      if (ros2_node->has_action("/" + action_path))
+      {
+        auto entry = ros2_node->get_action_entry("/" + action_path);
+        if (!entry) { return -ENOENT; }
+
+        std::string svc_key;
+        if      (sub == "send_goal")  { svc_key = entry->send_goal; }
+        else if (sub == "cancel")     { svc_key = entry->cancel_goal; }
+        else if (sub == "get_result") { svc_key = entry->get_result; }
+        else { return -ENOENT; }
+
+        try
+        {
+          nlohmann::json j = nlohmann::json::parse(data);
+          std::string result = ros2_node->call_service(svc_key, j);
+          RCLCPP_INFO(ros2_node->get_logger(),
+                      "write: action %s/%s response: %s",
+                      action_path.c_str(), sub.c_str(), result.c_str());
+          return static_cast<int>(size);
+        }
+        catch (const nlohmann::json::parse_error& e)
+        {
+          RCLCPP_ERROR(ros2_node->get_logger(),
+                       "write: JSON parse error for action %s/%s: %s",
+                       action_path.c_str(), sub.c_str(), e.what());
+          return -EINVAL;
+        }
+        catch (const std::exception& e)
+        {
+          RCLCPP_ERROR(ros2_node->get_logger(),
+                       "write: action call failed for %s/%s: %s",
+                       action_path.c_str(), sub.c_str(), e.what());
+          return -EIO;
+        }
+      }
+    }
+  }
 
   // ── Service command ────────────────────────────────────────────────────────
   if (ros2_node->has_service(original))

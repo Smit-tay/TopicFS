@@ -2,6 +2,8 @@
 
 **A POSIX Filesystem Interface for ROS2 — by Jack Sidman Smith**
 
+#### TopicFS exposes ROS2 topics, services, and actions as POSIX files.
+
 > *"What if you could just `cat` a robot?"*
 
 TopicFS exposes live ROS2 topics, services, and actions as ordinary files and

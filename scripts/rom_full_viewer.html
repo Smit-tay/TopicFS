@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UArm Swift Pro — Workspace Envelope</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg:        #080c10;
+    --surface:   #0d1520;
+    --border:    #1a2535;
+    --text:      #a8c4d8;
+    --text-dim:  #3a5060;
+    --text-hi:   #e0f0ff;
+    --reach:     #00e5a0;
+    --reach-dim: #004830;
+    --miss:      #ff3a20;
+    --miss-dim:  #3a0800;
+    --hull:      #0088cc;
+    --accent:    #00aaff;
+    --mono:      'JetBrains Mono', monospace;
+}
+
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--mono); }
+
+#app {
+    display: grid;
+    grid-template-rows: 44px 1fr 36px;
+    grid-template-columns: 1fr 220px;
+    height: 100vh;
+    gap: 0;
+}
+
+/* ── Header ── */
+#header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+#header h1 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+}
+
+#load-btn {
+    position: relative;
+    cursor: pointer;
+}
+#load-btn input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 0;
+}
+#load-btn span {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 4px 10px;
+    border-radius: 2px;
+    pointer-events: none;
+    transition: background 0.15s;
+}
+#load-btn:hover span { background: rgba(0,170,255,0.1); }
+
+#stats-header {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    margin-left: auto;
+}
+#stats-header b { color: var(--text); }
+
+/* ── Canvas ── */
+#canvas-wrap {
+    position: relative;
+    background: var(--bg);
+    overflow: hidden;
+}
+#canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+
+#drop-msg {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+    transition: opacity 0.3s;
+}
+#drop-msg .icon { font-size: 32px; opacity: 0.3; }
+
+/* ── Tooltip ── */
+#tooltip {
+    position: absolute;
+    top: 12px; left: 12px;
+    background: rgba(8,12,16,0.95);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    padding: 10px 12px;
+    font-size: 10px;
+    line-height: 2;
+    letter-spacing: 0.04em;
+    display: none;
+    pointer-events: none;
+    color: var(--text);
+    min-width: 220px;
+}
+#tooltip .tt-title { font-size: 11px; font-weight: 600; color: var(--text-hi); margin-bottom: 4px; }
+#tooltip .tt-miss { color: var(--miss); font-size: 9px; letter-spacing: 0.1em; }
+#tooltip .lbl { color: var(--text-dim); }
+
+/* ── Side panel ── */
+#panel {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    padding: 14px 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    font-size: 10px;
+}
+
+.panel-section { display: flex; flex-direction: column; gap: 8px; }
+.panel-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+}
+
+.ctrl-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.ctrl-row label { color: var(--text); font-size: 10px; }
+
+input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px; height: 10px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+
+.val-display {
+    font-size: 9px;
+    color: var(--accent);
+    min-width: 28px;
+    text-align: right;
+}
+
+.legend-item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; color: var(--text);
+}
+.legend-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+
+/* ── Footer ── */
+#footer {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 24px;
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+}
+#footer span b { color: var(--text); }
+#progress-bar-wrap {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+}
+#progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--reach), var(--accent));
+    transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="header">
+    <h1>UArm Swift Pro &mdash; Workspace Envelope</h1>
+    <div id="load-btn">
+      <input type="file" id="file-input" accept=".csv">
+      <span>Load CSV</span>
+    </div>
+    <div id="stats-header">Load a <b>rom_full_results.csv</b> to render the envelope</div>
+  </header>
+
+  <div id="canvas-wrap">
+    <div id="drop-msg">
+      <div class="icon">⬡</div>
+      <div>LOAD ROM SWEEP CSV TO RENDER WORKSPACE ENVELOPE</div>
+    </div>
+    <div id="tooltip">
+      <div class="tt-title" id="tt-title"></div>
+      <div id="tt-body"></div>
+    </div>
+  </div>
+
+  <div id="panel">
+    <div class="panel-section">
+      <div class="panel-label">Envelope</div>
+      <div class="ctrl-row">
+        <label>Opacity</label>
+        <input type="range" id="hull-opacity" min="0" max="100" value="22">
+        <span class="val-display" id="hull-opacity-val">22%</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Wireframe</label>
+        <input type="checkbox" id="hull-wire" checked>
+      </div>
+      <div class="ctrl-row">
+        <label>Show hull</label>
+        <input type="checkbox" id="show-hull" checked>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Points</div>
+      <div class="ctrl-row">
+        <label>Reached</label>
+        <input type="checkbox" id="show-reach" checked>
+      </div>
+      <div class="ctrl-row">
+        <label>Missed</label>
+        <input type="checkbox" id="show-miss" checked>
+      </div>
+      <div class="ctrl-row">
+        <label>Pt size</label>
+        <input type="range" id="pt-size" min="1" max="10" value="3">
+        <span class="val-display" id="pt-size-val">3</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Filter Z height</div>
+      <div class="ctrl-row">
+        <label>Min Z</label>
+        <input type="range" id="z-min" min="-120" max="190" value="-120">
+        <span class="val-display" id="z-min-val">-120</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Max Z</label>
+        <input type="range" id="z-max" min="-120" max="190" value="190">
+        <span class="val-display" id="z-max-val">190</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Legend</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#00e5a0"></div>Reached</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff3a20"></div>Out of reach</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#0088cc;opacity:0.6;border-radius:0"></div>Hull surface</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div>Centre origin</div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Stats</div>
+      <div id="panel-stats" style="color:var(--text-dim);line-height:2">—</div>
+    </div>
+  </div>
+
+  <footer id="footer">
+    <span>Drag: rotate</span>
+    <span>Scroll: zoom</span>
+    <span>Right-drag: pan</span>
+    <span>Hover: inspect</span>
+    <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+    <span id="footer-pts">0 pts</span>
+  </footer>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── Three.js setup ────────────────────────────────────────────────────────────
+
+const wrap     = document.getElementById('canvas-wrap');
+const dropMsg  = document.getElementById('drop-msg');
+const tooltip  = document.getElementById('tooltip');
+const ttTitle  = document.getElementById('tt-title');
+const ttBody   = document.getElementById('tt-body');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x080c10, 1);
+wrap.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, 1, 1, 8000);
+
+// Ambient + directional for hull shading
+scene.add(new THREE.AmbientLight(0x223344, 2.0));
+const dirLight = new THREE.DirectionalLight(0x88ccff, 1.5);
+dirLight.position.set(300, 400, 200);
+scene.add(dirLight);
+const dirLight2 = new THREE.DirectionalLight(0x004466, 0.8);
+dirLight2.position.set(-200, -100, -300);
+scene.add(dirLight2);
+
+// Camera state
+const target = new THREE.Vector3(180, 35, 0);
+let rotX = 0.25, rotY = 0.6, camDist = 700;
+
+function updateCamera() {
+    camera.position.x = target.x + camDist * Math.sin(rotY) * Math.cos(rotX);
+    camera.position.y = target.y + camDist * Math.sin(rotX);
+    camera.position.z = target.z + camDist * Math.cos(rotY) * Math.cos(rotX);
+    camera.lookAt(target);
+}
+
+function resize() {
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    renderer.setSize(W, H);
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+}
+
+// ── Grid ──────────────────────────────────────────────────────────────────────
+
+function buildGrid(cx, cy, cz) {
+    const g = new THREE.Group();
+    const mat = new THREE.LineBasicMaterial({ color: 0x0d1e2e, transparent: true, opacity: 0.8 });
+    const size = 700, step = 50;
+    for (let i = -size/2; i <= size/2; i += step) {
+        const a = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(cx - size/2, cy, cz + i),
+            new THREE.Vector3(cx + size/2, cy, cz + i)
+        ]);
+        const b = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(cx + i, cy, cz - size/2),
+            new THREE.Vector3(cx + i, cy, cz + size/2)
+        ]);
+        g.add(new THREE.Line(a, mat));
+        g.add(new THREE.Line(b, mat));
+    }
+    return g;
+}
+
+function buildAxes(cx, cy, cz, len) {
+    const g = new THREE.Group();
+    const colors = [0xff3333, 0x33cc66, 0x3388ff];
+    const dirs   = [[1,0,0],[0,1,0],[0,0,1]];
+    colors.forEach((col, i) => {
+        const mat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.5 });
+        const pts = [
+            new THREE.Vector3(cx, cy, cz),
+            new THREE.Vector3(cx + dirs[i][0]*len, cy + dirs[i][1]*len, cz + dirs[i][2]*len)
+        ];
+        g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+    });
+    return g;
+}
+
+scene.add(buildGrid(180, 0, 0));
+scene.add(buildAxes(180, 0, 0, 150));
+
+// ── Convex hull ───────────────────────────────────────────────────────────────
+// Gift-wrapping (Jarvis march) extended to 3D via incremental algorithm.
+// For workspace visualisation, we use Three.js ConvexGeometry polyfill
+// implemented here without importing examples/ (r128 doesn't bundle it).
+
+// Simple incremental convex hull — sufficient for ~1000–3000 points.
+// Returns { vertices: Float32Array, indices: Uint32Array } for BufferGeometry.
+
+function buildConvexHull(pts) {
+    // pts: array of [x, y, z]
+    // We use a simple gift-wrapping on the surface triangles.
+    // For smooth results with hundreds of points we use the following:
+    // Build a THREE.ConvexGeometry-equivalent via the quickhull algorithm.
+
+    if (pts.length < 4) return null;
+
+    // QuickHull implementation (3D)
+    const verts = pts.map((p, i) => ({ x: p[0], y: p[1], z: p[2], i }));
+
+    function dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+    function sub(a, b) { return [a.x-b.x, a.y-b.y, a.z-b.z]; }
+    function cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+    function norm(v) { const l = Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2])||1; return [v[0]/l,v[1]/l,v[2]/l]; }
+    function distPointPlane(p, n, d) { return n[0]*p.x+n[1]*p.y+n[2]*p.z - d; }
+
+    // Find extreme points for initial tetrahedron
+    let minX = verts[0], maxX = verts[0];
+    for (const v of verts) {
+        if (v.x < minX.x) minX = v;
+        if (v.x > maxX.x) maxX = v;
+    }
+    // Find furthest from minX-maxX edge
+    const edge = sub(maxX, minX);
+    let maxD2 = -1, p2 = null;
+    for (const v of verts) {
+        const d = sub(v, minX);
+        const c = cross(edge, d);
+        const d2 = c[0]*c[0]+c[1]*c[1]+c[2]*c[2];
+        if (d2 > maxD2) { maxD2 = d2; p2 = v; }
+    }
+    // Find furthest from triangle
+    const n0 = norm(cross(sub(maxX, minX), sub(p2, minX)));
+    const plane0d = n0[0]*minX.x + n0[1]*minX.y + n0[2]*minX.z;
+    let maxDist = -Infinity, p3 = null;
+    for (const v of verts) {
+        const d = Math.abs(distPointPlane(v, n0, plane0d));
+        if (d > maxDist) { maxDist = d; p3 = v; }
+    }
+
+    if (!p3 || !p2) return null;
+
+    // Build initial tetrahedron faces
+    const faces = [];
+    const seed = [minX, maxX, p2, p3];
+
+    function addFace(a, b, c, allVerts) {
+        const n = norm(cross(sub(b, a), sub(c, a)));
+        const d = n[0]*a.x + n[1]*a.y + n[2]*a.z;
+        // Ensure normal points outward (away from centroid)
+        const cx = (seed[0].x+seed[1].x+seed[2].x+seed[3].x)/4;
+        const cy = (seed[0].y+seed[1].y+seed[2].y+seed[3].y)/4;
+        const cz = (seed[0].z+seed[1].z+seed[2].z+seed[3].z)/4;
+        const sign = n[0]*cx + n[1]*cy + n[2]*cz - d < 0 ? 1 : -1;
+        const fn = [n[0]*sign, n[1]*sign, n[2]*sign];
+        const fd = fn[0]*a.x + fn[1]*a.y + fn[2]*a.z;
+        // Visible points
+        const vis = allVerts.filter(v => fn[0]*v.x+fn[1]*v.y+fn[2]*v.z - fd > 1e-10);
+        return { a, b, c, n: fn, d: fd, vis };
+    }
+
+    const combos = [[0,1,2],[0,1,3],[0,2,3],[1,2,3]];
+    for (const [i,j,k] of combos) {
+        const f = addFace(seed[i], seed[j], seed[k], verts);
+        if (f) faces.push(f);
+    }
+
+    // Iteratively add points
+    let changed = true;
+    const MAX_ITER = verts.length * 2;
+    let iter = 0;
+    while (changed && iter++ < MAX_ITER) {
+        changed = false;
+        for (let fi = faces.length - 1; fi >= 0; fi--) {
+            const face = faces[fi];
+            if (!face.vis || face.vis.length === 0) continue;
+            // Pick furthest visible point
+            let best = face.vis[0], bestD = -Infinity;
+            for (const v of face.vis) {
+                const dd = face.n[0]*v.x+face.n[1]*v.y+face.n[2]*v.z - face.d;
+                if (dd > bestD) { bestD = dd; best = v; }
+            }
+            // Find horizon edges
+            const visible = new Set();
+            const toRemove = [];
+            const stack = [fi];
+            const seen = new Set([fi]);
+            while (stack.length) {
+                const idx = stack.pop();
+                const f2 = faces[idx];
+                const d2 = f2.n[0]*best.x+f2.n[1]*best.y+f2.n[2]*best.z - f2.d;
+                if (d2 > -1e-10) {
+                    visible.add(idx);
+                    toRemove.push(idx);
+                    // Find adjacent faces (shared edge)
+                    const vts = [f2.a, f2.b, f2.c];
+                    for (let a2 = 0; a2 < 3; a2++) {
+                        const ea = vts[a2], eb = vts[(a2+1)%3];
+                        for (let fj = 0; fj < faces.length; fj++) {
+                            if (seen.has(fj)) continue;
+                            const f3 = faces[fj];
+                            const vts3 = [f3.a, f3.b, f3.c];
+                            const sharedA = vts3.some(v=>v===ea);
+                            const sharedB = vts3.some(v=>v===eb);
+                            if (sharedA && sharedB) { seen.add(fj); stack.push(fj); }
+                        }
+                    }
+                }
+            }
+            if (visible.size === 0) continue;
+
+            // Collect horizon edges (edges between visible and non-visible faces)
+            const horizonEdges = [];
+            for (const idx of visible) {
+                const f2 = faces[idx];
+                const vts = [f2.a, f2.b, f2.c];
+                for (let a2 = 0; a2 < 3; a2++) {
+                    const ea = vts[a2], eb = vts[(a2+1)%3];
+                    let onHorizon = true;
+                    for (let fj = 0; fj < faces.length; fj++) {
+                        if (visible.has(fj)) continue;
+                        const f3 = faces[fj];
+                        const vts3 = [f3.a, f3.b, f3.c];
+                        if (vts3.some(v=>v===ea) && vts3.some(v=>v===eb)) {
+                            onHorizon = false; break;
+                        }
+                    }
+                    if (onHorizon) horizonEdges.push([ea, eb]);
+                }
+            }
+
+            // Remove visible faces (back to front to keep indices valid)
+            const sorted = [...visible].sort((a, b) => b - a);
+            for (const idx of sorted) faces.splice(idx, 1);
+
+            // Add new faces from horizon to apex
+            for (const [ea, eb] of horizonEdges) {
+                const nf = addFace(ea, eb, best, verts);
+                if (nf) faces.push(nf);
+            }
+            changed = true;
+            break;
+        }
+    }
+
+    // Convert faces to geometry
+    const positions = [];
+    const normals   = [];
+    const indices   = [];
+    let vi = 0;
+    for (const face of faces) {
+        for (const v of [face.a, face.b, face.c]) {
+            positions.push(v.x, v.y, v.z);
+            normals.push(face.n[0], face.n[1], face.n[2]);
+        }
+        indices.push(vi, vi+1, vi+2);
+        vi += 3;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
+    geo.setIndex(indices);
+    return geo;
+}
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+
+let allRows = [];
+let dataGroup = null;
+let hoverMeshes = [];
+let hullMesh = null, hullWire = null;
+let reachPoints = [], missPoints = [];
+
+// Controls state
+let state = {
+    hullOpacity: 0.22,
+    hullWire: true,
+    showHull: true,
+    showReach: true,
+    showMiss: true,
+    ptSize: 3,
+    zMin: -120,
+    zMax: 190,
+};
+
+function parseCSV(text) {
+    const lines   = text.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.trim());
+    return lines.slice(1).filter(l => l.trim()).map(l => {
+        const vals = l.split(',');
+        const obj  = {};
+        headers.forEach((h, i) => obj[h] = (vals[i] || '').trim());
+        return obj;
+    });
+}
+
+// arm coords → three.js: ThreeY = armZ, ThreeZ = armY
+function toThree(x, y, z) {
+    return new THREE.Vector3(parseFloat(x), parseFloat(z), parseFloat(y));
+}
+
+function buildScene() {
+    if (dataGroup) { scene.remove(dataGroup); dataGroup = null; }
+    hullMesh = null; hullWire = null;
+    hoverMeshes = [];
+    reachPoints = []; missPoints = [];
+    dataGroup = new THREE.Group();
+
+    const rows = allRows.filter(r => {
+        const z = parseFloat(r.cmd_z);
+        return z >= state.zMin && z <= state.zMax;
+    });
+
+    let reached = 0;
+
+    rows.forEach((row, idx) => {
+        const missed = row.reached !== 'true';
+        if (!missed) reached++;
+
+        const hasPlot = row.plot_x !== undefined;
+        const px = hasPlot ? row.plot_x : (missed ? row.cmd_x : row.actual_x);
+        const py = hasPlot ? row.plot_y : (missed ? row.cmd_y : row.actual_y);
+        const pz = hasPlot ? row.plot_z : (missed ? row.cmd_z : row.actual_z);
+
+        const pos = toThree(px, py, pz);
+
+        if (!missed) {
+            reachPoints.push([pos.x, pos.y, pos.z]);
+        }
+
+        const radius = missed ? state.ptSize * 1.8 : state.ptSize;
+        const color  = missed ? 0xff3a20 : 0x00e5a0;
+        const visible = missed ? state.showMiss : state.showReach;
+
+        const geo  = new THREE.SphereGeometry(radius, 8, 8);
+        const mat  = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: missed ? 0.85 : 0.7 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(pos);
+        mesh.visible = visible;
+        mesh.userData = { idx, missed };
+        dataGroup.add(mesh);
+        hoverMeshes.push(mesh);
+    });
+
+    // Convex hull of reached points
+    if (reachPoints.length >= 4 && state.showHull) {
+        try {
+            const hullGeo = buildConvexHull(reachPoints);
+            if (hullGeo) {
+                const hullMat = new THREE.MeshPhongMaterial({
+                    color: 0x0088cc,
+                    emissive: 0x001122,
+                    transparent: true,
+                    opacity: state.hullOpacity,
+                    side: THREE.DoubleSide,
+                    depthWrite: false,
+                });
+                hullMesh = new THREE.Mesh(hullGeo, hullMat);
+                dataGroup.add(hullMesh);
+
+                if (state.hullWire) {
+                    const wireMat = new THREE.MeshBasicMaterial({
+                        color: 0x00aaff,
+                        wireframe: true,
+                        transparent: true,
+                        opacity: 0.12,
+                    });
+                    hullWire = new THREE.Mesh(hullGeo, wireMat);
+                    dataGroup.add(hullWire);
+                }
+            }
+        } catch(e) {
+            console.warn('Hull build failed:', e);
+        }
+    }
+
+    // Centre origin
+    const oMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(7, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x60a5fa })
+    );
+    oMesh.position.set(180, 35, 0);
+    dataGroup.add(oMesh);
+
+    scene.add(dataGroup);
+    dropMsg.style.display = 'none';
+
+    const missed = rows.length - reached;
+    const pct = rows.length > 0 ? (reached / rows.length * 100).toFixed(1) : 0;
+
+    document.getElementById('stats-header').innerHTML =
+        `<b>${rows.length}</b> pts &nbsp;·&nbsp; <b style="color:#00e5a0">${reached}</b> reached &nbsp;·&nbsp; <b style="color:#ff3a20">${missed}</b> missed &nbsp;·&nbsp; <b>${pct}%</b> reachable`;
+
+    document.getElementById('panel-stats').innerHTML =
+        `Total pts: <b style="color:var(--text)">${allRows.length}</b><br>` +
+        `Filtered: <b style="color:var(--text)">${rows.length}</b><br>` +
+        `Reached: <b style="color:#00e5a0">${reached}</b><br>` +
+        `Missed: <b style="color:#ff3a20">${missed}</b><br>` +
+        `Rate: <b style="color:var(--text)">${pct}%</b><br>` +
+        `Hull pts: <b style="color:var(--text)">${reachPoints.length}</b>`;
+
+    document.getElementById('footer-pts').textContent = `${rows.length} pts`;
+    document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+
+function bindRange(id, key, display, scale) {
+    const el = document.getElementById(id);
+    const dEl = document.getElementById(display);
+    el.addEventListener('input', () => {
+        const v = scale ? parseFloat(el.value) / scale : parseInt(el.value);
+        state[key] = v;
+        dEl.textContent = scale ? (v * 100).toFixed(0) + '%' : el.value;
+        applyControls();
+    });
+}
+function bindCheck(id, key) {
+    document.getElementById(id).addEventListener('change', e => {
+        state[key] = e.target.checked;
+        applyControls();
+    });
+}
+
+bindRange('hull-opacity', 'hullOpacity', 'hull-opacity-val', 100);
+bindRange('pt-size', 'ptSize', 'pt-size-val', null);
+bindRange('z-min', 'zMin', 'z-min-val', null);
+bindRange('z-max', 'zMax', 'z-max-val', null);
+bindCheck('hull-wire', 'hullWire');
+bindCheck('show-hull', 'showHull');
+bindCheck('show-reach', 'showReach');
+bindCheck('show-miss', 'showMiss');
+
+// Z filter triggers full rebuild (filters points)
+document.getElementById('z-min').addEventListener('change', () => { if (allRows.length) buildScene(); });
+document.getElementById('z-max').addEventListener('change', () => { if (allRows.length) buildScene(); });
+document.getElementById('pt-size').addEventListener('change', () => { if (allRows.length) buildScene(); });
+document.getElementById('hull-wire').addEventListener('change', () => { if (allRows.length) buildScene(); });
+document.getElementById('show-hull').addEventListener('change', () => { if (allRows.length) buildScene(); });
+
+function applyControls() {
+    if (!dataGroup) return;
+    // Opacity / visibility toggles that don't need a full rebuild
+    if (hullMesh) {
+        hullMesh.visible = state.showHull;
+        hullMesh.material.opacity = state.hullOpacity;
+    }
+    if (hullWire) hullWire.visible = state.showHull && state.hullWire;
+    hoverMeshes.forEach(m => {
+        if (m.userData.missed !== undefined) {
+            m.visible = m.userData.missed ? state.showMiss : state.showReach;
+        }
+    });
+}
+
+// ── File load ─────────────────────────────────────────────────────────────────
+
+document.getElementById('file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        allRows = parseCSV(ev.target.result);
+        buildScene();
+        target.set(180, 100, 0);
+        rotX = 0.25; rotY = 0.6; camDist = 700;
+        updateCamera();
+    };
+    reader.readAsText(file);
+});
+
+// ── Mouse ─────────────────────────────────────────────────────────────────────
+
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points = { threshold: 4 };
+const mouse = new THREE.Vector2();
+let drag = false, rightDrag = false, lastX = 0, lastY = 0;
+
+renderer.domElement.addEventListener('mousemove', e => {
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+
+    if (drag) {
+        rotY += dx * 0.004;
+        rotX = Math.max(-1.4, Math.min(1.4, rotX - dy * 0.004));
+        updateCamera(); return;
+    }
+    if (rightDrag) {
+        const right = new THREE.Vector3();
+        camera.getWorldDirection(right);
+        right.cross(camera.up).normalize();
+        target.addScaledVector(right, -dx * 0.35);
+        target.addScaledVector(camera.up, dy * 0.35);
+        updateCamera(); return;
+    }
+
+    if (!hoverMeshes.length) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(hoverMeshes);
+
+    if (hits.length > 0) {
+        const { idx, missed } = hits[0].object.userData;
+        if (idx === undefined) { tooltip.style.display = 'none'; return; }
+        const row = allRows[idx];
+        ttTitle.innerHTML = `Point ${row.point}${missed ? ' <span style="color:#ff3a20;font-size:9px">OUT OF REACH</span>' : ''}`;
+        const az = row.azimuth !== undefined ? `<span class="lbl">Azimuth:</span> ${row.azimuth}°<br>` : '';
+        const rad = row.radius !== undefined ? `<span class="lbl">Radius:</span> ${parseFloat(row.radius).toFixed(1)} mm<br>` : '';
+        ttBody.innerHTML =
+            az + rad +
+            `<span class="lbl">Commanded:</span> (${parseFloat(row.cmd_x).toFixed(1)}, ${parseFloat(row.cmd_y).toFixed(1)}, ${parseFloat(row.cmd_z).toFixed(1)})<br>` +
+            `<span class="lbl">Actual:</span> (${parseFloat(row.actual_x).toFixed(1)}, ${parseFloat(row.actual_y).toFixed(1)}, ${parseFloat(row.actual_z).toFixed(1)})<br>` +
+            `<span class="lbl">Delta:</span> (${parseFloat(row.dx).toFixed(2)}, ${parseFloat(row.dy).toFixed(2)}, ${parseFloat(row.dz).toFixed(2)}) mm`;
+        tooltip.style.display = 'block';
+    } else {
+        tooltip.style.display = 'none';
+    }
+});
+
+renderer.domElement.addEventListener('mousedown', e => {
+    if (e.button === 2) rightDrag = true; else drag = true;
+    lastX = e.clientX; lastY = e.clientY;
+});
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('mouseup', () => { drag = false; rightDrag = false; });
+renderer.domElement.addEventListener('wheel', e => {
+    camDist = Math.max(50, camDist + e.deltaY * 0.5);
+    updateCamera();
+    e.preventDefault();
+}, { passive: false });
+
+window.addEventListener('resize', resize);
+resize();
+updateCamera();
+
+// ── Render ────────────────────────────────────────────────────────────────────
+fetch('rom_full_results.csv')
+    .then(r => { if (!r.ok) throw new Error('not found'); return r.text(); })
+    .then(text => {
+        allRows = parseCSV(text);
+        buildScene();
+        target.set(180, 35, 0);
+        rotX = 0.25; rotY = 0.6; camDist = 700;
+        updateCamera();
+        document.getElementById('load-btn').style.display = 'none';
+    })
+    .catch(() => { /* no CSV — leave button visible for manual load */ });
+function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+animate();
+</script>
+</body>
+</html>
