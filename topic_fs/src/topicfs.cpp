@@ -119,7 +119,8 @@ bool TopicFS::setup_mount_point(int argc, char* argv[])
     char line[1024];
     while (fgets(line, sizeof(line), mounts))
     {
-      if (strstr(line, mount_point_.c_str()) && strstr(line, "fuse.topic_fs"))
+      if (strstr(line, mount_point_.c_str()) &&
++          (strstr(line, "fuse.topic_fs") || strstr(line, "/dev/fuse")))
       {
         RCLCPP_WARN(ros2_node_->get_logger(),
                     "setup_mount_point: stale mount at %s, unmounting",

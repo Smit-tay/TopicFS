@@ -26,5 +26,6 @@ services:
       TZ: Europe/Berlin
       QT_X11_NO_MITSHM: 1
       DISPLAY: $DISPLAY
+      TOPICFS_INSTALL: /home/$USER/dev/smithjack.net/topicfs/install
     cap_add:
       - SYS_NICE

@@ -4,18 +4,22 @@
 # Licensed under the MIT License. See LICENSE in project root.
 #
 # Runtime entrypoint for the TopicFS container.
-
-set -e
+# Environment variables:
+#   TOPICFS_INSTALL     — path to colcon install tree
+#   TOPICFS_MOUNT_POINT — FUSE mount point
 
 source /opt/ros/jazzy/setup.bash
 
-if [ ! -f /home/jack/dev/smithjack.net/topicfs/install/setup.bash ]; then
-    echo "ERROR: TopicFS install not found." >&2
-    echo "  Run NF_00 (colcon build) first." >&2
+TOPICFS_INSTALL=${TOPICFS_INSTALL:-${HOME}/dev/smithjack.net/topicfs/install}
+MOUNT_POINT=${TOPICFS_MOUNT_POINT:-${HOME}/fuse_mount}
+
+if [ ! -f "${TOPICFS_INSTALL}/setup.bash" ]; then
+    echo "ERROR: TopicFS install not found at ${TOPICFS_INSTALL}" >&2
+    echo "  Set TOPICFS_INSTALL or run NF_00 (colcon build) first." >&2
     exit 1
 fi
 
-source /home/jack/dev/smithjack.net/topicfs/install/setup.bash
+source "${TOPICFS_INSTALL}/setup.bash"
 
 # Source any third-party typesupport packages
 if [ -d /opt/topicfs_typesupport ]; then
@@ -27,6 +31,27 @@ if [ -d /opt/topicfs_typesupport ]; then
     done
 fi
 
-exec ros2 run topic_fs topic_fs \
+cleanup() {
+    echo "[topicfs] unmounting ${MOUNT_POINT}"
+    fusermount3 -u "${MOUNT_POINT}" 2>/dev/null || true
+}
+
+term_handler() {
+    if [ -n "${NODE_PID}" ]; then
+        kill -TERM "${NODE_PID}" 2>/dev/null
+        wait "${NODE_PID}"
+    fi
+    cleanup
+}
+
+trap term_handler TERM
+trap cleanup EXIT
+
+NODE_PID=""
+
+ros2 run topic_fs topic_fs \
     --ros-args \
-    -p mount_point:=${TOPICFS_MOUNT_POINT:-/home/jack/fuse_mount}
+    -p mount_point:="${MOUNT_POINT}" &
+
+NODE_PID=$!
+wait "${NODE_PID}"
