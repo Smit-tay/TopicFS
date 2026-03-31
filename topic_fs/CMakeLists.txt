@@ -13,6 +13,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# Force nonstd::span implementation to match rosx_introspection ABI.
+# The library was compiled without C++20 std::span, so we must match.
+add_compile_definitions(span_CONFIG_SELECT_SPAN=1)
+
 # -----------------------------------------------------------------------------
 # Dependencies
 # -----------------------------------------------------------------------------
@@ -23,9 +27,10 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rcl_action REQUIRED)
 find_package(rmw REQUIRED)
-find_package(rosbag2_cpp REQUIRED)
 find_package(rosidl_runtime_cpp REQUIRED)
+find_package(rosx_introspection REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(type_description_interfaces REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FUSE3 REQUIRED fuse3) # Use 'fuse3' if using FUSE 3.x
@@ -65,6 +70,7 @@ target_link_libraries(topic_fs
   ${FUSE3_LIBRARIES}
   nlohmann_json::nlohmann_json
   dl
+  rosx_introspection::rosx_introspection
 )
 
 # Specify FUSE compiler flags
@@ -81,6 +87,8 @@ ament_target_dependencies(topic_fs
   rmw
   rosidl_runtime_cpp
   rosidl_typesupport_introspection_cpp
+  rosx_introspection
+  type_description_interfaces
 )
 
 # -----------------------------------------------------------------------------

@@ -14,6 +14,8 @@
 
 // Third-party
 #include <nlohmann/json.hpp>
+#include <rosx_introspection/ros_parser.hpp>
+#include <rosx_introspection/deserializer.hpp>
 
 // ROS2
 #include <rclcpp/serialized_message.hpp>
@@ -25,6 +27,10 @@
 #include <rosidl_typesupport_introspection_cpp/message_introspection.hpp>
 #include <rosidl_typesupport_cpp/message_type_support.hpp>
 
+// there seems to be some confusion about which span is used.
+// #define span_CONFIG_SELECT_SPAN=1
+#include <rosx_introspection/contrib/span.hpp>
+
 // Project
 #include "topic_fs/ros_message_converter.hpp"
 
@@ -32,17 +38,136 @@
 // Static member definitions
 // -----------------------------------------------------------------------------
 
+std::mutex RosMessageConverter::parser_mutex_;
+std::unordered_map<std::string,
+  std::unique_ptr<RosMsgParser::Parser>> RosMessageConverter::parser_cache_;
+
+std::mutex RosMessageConverter::requested_mutex_;
+std::unordered_set<std::string> RosMessageConverter::requested_types_;
+
 std::unordered_map<std::string,
   const rosidl_message_type_support_t *> RosMessageConverter::type_support_cache_;
 
 // -----------------------------------------------------------------------------
+// Public - register_definition
+//
+// Called from topicfs_node after a successful GetTypeDescription response.
+// Constructs a rosx_introspection Parser and caches it for use by to_json().
+//
+// definition is the concatenated ROS1-style message definition: the primary
+// type's .msg content followed by zero or more dependency blocks separated by
+// the standard "=====..." / "MSG: pkg/Type" header lines, assembled by
+// topicfs_node from the type_sources array in the GetTypeDescription response.
+// -----------------------------------------------------------------------------
+
+void RosMessageConverter::register_definition(
+  const std::string & type_string,
+  const std::string & definition)
+{
+  std::lock_guard<std::mutex> lock(parser_mutex_);
+  if (parser_cache_.count(type_string))
+  {
+    return;  // Already registered
+  }
+
+  try
+  {
+    // rosx_introspection expects "geometry_msgs/Point", not "geometry_msgs/msg/Point"
+    const std::string rosx_type = to_rosx_type(type_string);
+    auto parser = std::make_unique<RosMsgParser::Parser>(
+      type_string,                    // topic_name — used as tree root label
+      RosMsgParser::ROSType(rosx_type),
+      definition);
+
+    parser_cache_[type_string] = std::move(parser);
+    fprintf(stderr,
+      "[RosMessageConverter] registered rosx parser for '%s'\n",
+      type_string.c_str());
+  }
+  catch (const std::exception & e)
+  {
+    fprintf(stderr,
+      "[RosMessageConverter] register_definition failed for '%s': %s\n",
+      type_string.c_str(), e.what());
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Public - mark_requested
+//
+// Atomically marks a type as having had GetTypeDescription requested.
+// Returns true if this call is the first (caller should fire the request).
+// Returns false if already requested (caller should skip — duplicate).
+// -----------------------------------------------------------------------------
+
+bool RosMessageConverter::mark_requested(const std::string & type_string)
+{
+  std::lock_guard<std::mutex> lock(requested_mutex_);
+  auto [_, inserted] = requested_types_.insert(type_string);
+  return inserted;
+}
+
+// -----------------------------------------------------------------------------
 // Public - to_json
+//
+// Resolution order:
+//   1. rosx_introspection Parser — populated asynchronously via GetTypeDescription.
+//      Zero config: works for any type the remote node knows about.
+//   2. dlopen typesupport .so — legacy path, requires AMENT_PREFIX_PATH.
+//   3. std::nullopt — caller (subscribe_to_topic) falls back to base64 CDR.
+//
+// ROS2 CDR buffers have a 4-byte representation identifier header prepended
+// by the RMW layer. rosx_introspection operates on raw CDR payload, so we
+// skip those 4 bytes before passing the buffer.
 // -----------------------------------------------------------------------------
 
 std::optional<nlohmann::json> RosMessageConverter::to_json(
   const std::string & type_string,
   const rclcpp::SerializedMessage & msg)
 {
+  const auto & rcl_msg = msg.get_rcl_serialized_message();
+  if (!rcl_msg.buffer || rcl_msg.buffer_length == 0)
+  {
+    return std::nullopt;
+  }
+
+  // ── Tier 1: rosx_introspection ─────────────────────────────────────────────
+  {
+    std::lock_guard<std::mutex> lock(parser_mutex_);
+    auto it = parser_cache_.find(type_string);
+    if (it != parser_cache_.end())
+    {
+      // Strip the 4-byte ROS2 CDR representation header
+      constexpr size_t cdr_header = 4;
+      if (rcl_msg.buffer_length <= cdr_header)
+      {
+        return std::nullopt;
+      }
+
+      nonstd::span<const uint8_t> span(
+        rcl_msg.buffer + cdr_header,
+        rcl_msg.buffer_length - cdr_header);
+
+      std::string json_txt;
+      RosMsgParser::ROS2_Deserializer deserializer;
+      deserializer.init(span);
+
+      bool ok = it->second->deserializeIntoJson(span, &json_txt, &deserializer);
+      if (ok && !json_txt.empty())
+      {
+        try
+        {
+          return nlohmann::json::parse(json_txt);
+        }
+        catch (const nlohmann::json::parse_error &)
+        {
+          // rosx produced malformed JSON — fall through to dlopen
+        }
+      }
+    }
+  }
+
+  // ── Tier 2: dlopen typesupport .so ─────────────────────────────────────────
   const rosidl_message_type_support_t * type_support = get_type_support(type_string);
   if (!type_support)
   {
@@ -66,13 +191,10 @@ std::optional<nlohmann::json> RosMessageConverter::to_json(
     return std::nullopt;
   }
 
-  // Allocate and initialise message memory
   std::vector<uint8_t> buffer(members->size_of_);
   members->init_function(buffer.data(), rosidl_runtime_cpp::MessageInitialization::ALL);
 
-  // Deserialize CDR into message memory
   rmw_serialized_message_t serialized_msg = rmw_get_zero_initialized_serialized_message();
-  const auto & rcl_msg = msg.get_rcl_serialized_message();
   serialized_msg.buffer          = rcl_msg.buffer;
   serialized_msg.buffer_length   = rcl_msg.buffer_length;
   serialized_msg.buffer_capacity = rcl_msg.buffer_capacity;
@@ -92,6 +214,9 @@ std::optional<nlohmann::json> RosMessageConverter::to_json(
 
 // -----------------------------------------------------------------------------
 // Public - from_json
+//
+// dlopen path only — rosx_introspection has no serialization support.
+// Unchanged from original implementation.
 // -----------------------------------------------------------------------------
 
 std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
@@ -121,7 +246,6 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
     return std::nullopt;
   }
 
-  // Allocate and initialise message memory
   std::vector<uint8_t> buffer(members->size_of_);
   members->init_function(buffer.data(), rosidl_runtime_cpp::MessageInitialization::ALL);
 
@@ -131,7 +255,6 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
     return std::nullopt;
   }
 
-  // Serialize to CDR
   rclcpp::SerializedMessage serialized_msg;
   rmw_serialized_message_t & rcl_msg = serialized_msg.get_rcl_serialized_message();
 
@@ -148,27 +271,12 @@ std::optional<rclcpp::SerializedMessage> RosMessageConverter::from_json(
 
 // -----------------------------------------------------------------------------
 // Public - get_type_support
-//
-// Loads the typesupport and introspection .so files for the given type string
-// using dlopen with a bare filename. The dynamic linker finds the correct .so
-// automatically because ament's setup.bash adds the package's lib/ directory
-// to LD_LIBRARY_PATH via AMENT_PREFIX_PATH. No manual path management here.
-//
-// For third-party packages: build with colcon, install to a prefix, source
-// that prefix's setup.bash before launching TopicFS. That is all that is
-// required.
-//
-// For service request/response types, the type_string convention is:
-//   "some_msgs/srv/MyService_Request"
-//   "some_msgs/srv/MyService_Response"
-// ROS2 generates these as ordinary message structs, so the same symbol
-// naming convention applies and this function handles them transparently.
+// Unchanged from original implementation.
 // -----------------------------------------------------------------------------
 
 const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
   const std::string & type_string)
 {
-  // Check cache first
   auto it = type_support_cache_.find(type_string);
   if (it != type_support_cache_.end())
   {
@@ -184,39 +292,27 @@ const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
     return nullptr;
   }
 
-  // Load the typesupport .so.
-  // LD_LIBRARY_PATH (set by ament setup.bash) ensures dlopen finds it.
   std::string ts_lib = "lib" + package + "__rosidl_typesupport_cpp.so";
   void * ts_handle = dlopen(ts_lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!ts_handle)
   {
     fprintf(stderr,
       "[RosMessageConverter] dlopen failed for '%s': %s\n"
-      "  Ensure the package's install prefix is on AMENT_PREFIX_PATH\n"
-      "  (source <install>/setup.bash before launching TopicFS).\n",
+      "  Ensure the package's install prefix is on AMENT_PREFIX_PATH.\n",
       ts_lib.c_str(), dlerror());
     return nullptr;
   }
 
-  // Load the introspection .so explicitly.
-  // For system packages this is typically pulled in transitively, but for
-  // third-party packages dropped into the container we load it explicitly
-  // to guarantee it is present before get_message_typesupport_handle() is called.
   std::string intr_lib = "lib" + package + "__rosidl_typesupport_introspection_cpp.so";
   void * intr_handle = dlopen(intr_lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!intr_handle)
   {
-    // Non-fatal: it may already be loaded transitively. Log and continue.
-    // get_message_typesupport_handle() will fail below with a clear error
-    // if introspection support is truly absent.
     fprintf(stderr,
       "[RosMessageConverter] Warning: dlopen failed for '%s': %s\n"
       "  Continuing — may be loaded transitively.\n",
       intr_lib.c_str(), dlerror());
   }
 
-  // Resolve the typesupport getter symbol.
-  // Convention: rosidl_typesupport_cpp__get_message_type_support_handle__pkg__subfolder__Type
   std::string symbol =
     "rosidl_typesupport_cpp__get_message_type_support_handle__" +
     package + "__" + subfolder + "__" + type_name;
@@ -238,6 +334,7 @@ const rosidl_message_type_support_t * RosMessageConverter::get_type_support(
 
 // -----------------------------------------------------------------------------
 // Private - parse_type_string
+// Unchanged from original implementation.
 // -----------------------------------------------------------------------------
 
 bool RosMessageConverter::parse_type_string(
@@ -246,33 +343,39 @@ bool RosMessageConverter::parse_type_string(
   std::string & subfolder,
   std::string & type_name)
 {
-  // Expected format: "geometry_msgs/msg/Point"
   size_t first_slash = type_string.find('/');
-  if (first_slash == std::string::npos)
-  {
-    return false;
-  }
+  if (first_slash == std::string::npos) { return false; }
 
   size_t second_slash = type_string.find('/', first_slash + 1);
-  if (second_slash == std::string::npos)
-  {
-    return false;
-  }
+  if (second_slash == std::string::npos) { return false; }
 
   package   = type_string.substr(0, first_slash);
   subfolder = type_string.substr(first_slash + 1, second_slash - first_slash - 1);
   type_name = type_string.substr(second_slash + 1);
 
-  if (package.empty() || subfolder.empty() || type_name.empty())
-  {
-    return false;
-  }
+  return !package.empty() && !subfolder.empty() && !type_name.empty();
+}
 
-  return true;
+// -----------------------------------------------------------------------------
+// Private - to_rosx_type
+//
+// Converts "geometry_msgs/msg/Point" -> "geometry_msgs/Point".
+// rosx_introspection ROSType does not use the /msg/ /srv/ subfolder component.
+// -----------------------------------------------------------------------------
+
+std::string RosMessageConverter::to_rosx_type(const std::string & type_string)
+{
+  std::string package, subfolder, type_name;
+  if (!parse_type_string(type_string, package, subfolder, type_name))
+  {
+    return type_string;  // Pass through unparseable strings unchanged
+  }
+  return package + "/" + type_name;
 }
 
 // -----------------------------------------------------------------------------
 // Public - members_to_json
+// Unchanged from original implementation.
 // -----------------------------------------------------------------------------
 
 nlohmann::json RosMessageConverter::members_to_json(
@@ -363,6 +466,7 @@ nlohmann::json RosMessageConverter::members_to_json(
 
 // -----------------------------------------------------------------------------
 // Public - json_to_members
+// Unchanged from original implementation.
 // -----------------------------------------------------------------------------
 
 bool RosMessageConverter::json_to_members(
@@ -378,11 +482,7 @@ bool RosMessageConverter::json_to_members(
     uint8_t * field_ptr = data + member.offset_;
     std::string name(member.name_);
 
-    if (!json.contains(name))
-    {
-      // Field absent from JSON — leave at initialised default, not an error
-      continue;
-    }
+    if (!json.contains(name)) { continue; }
 
     const nlohmann::json & val = json[name];
 
@@ -451,10 +551,7 @@ bool RosMessageConverter::json_to_members(
 
     if (member.is_array_)
     {
-      if (!val.is_array())
-      {
-        return false;
-      }
+      if (!val.is_array()) { return false; }
       size_t count = val.size();
       if ((member.is_upper_bound_ || member.array_size_ == 0) && member.resize_function)
       {
@@ -478,10 +575,7 @@ bool RosMessageConverter::json_to_members(
     }
     else
     {
-      if (!write_scalar(field_ptr, val))
-      {
-        return false;
-      }
+      if (!write_scalar(field_ptr, val)) { return false; }
     }
   }
 

@@ -116,6 +116,7 @@ RUN sudo apt-get update && \
         ros-jazzy-demo-nodes-cpp \
         ros-jazzy-generate-parameter-library \
         ros-jazzy-rosbag2 \
+        ros-jazzy-rosx-introspection \
     && sudo apt-get clean \
     && sudo rm -rf /var/lib/apt/lists/*
 

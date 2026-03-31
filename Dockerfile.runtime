@@ -41,6 +41,7 @@ RUN apt-get update && \
         ros-jazzy-rmw \
         ros-jazzy-rosidl-runtime-cpp \
         ros-jazzy-rosidl-typesupport-introspection-cpp \
+        ros-jazzy-rosx-introspection \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
