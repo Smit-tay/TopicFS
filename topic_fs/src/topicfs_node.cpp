@@ -120,6 +120,7 @@ topicfsNode::topicfsNode() : Node("topicfs_node")
     std::chrono::milliseconds(discovery_interval_ms_),
     [this]()
     {
+      RCLCPP_INFO(get_logger(), "discover: timer tick");
       discover_actions();   // must run before topics/services so filters work
       discover_topics();
       discover_services();

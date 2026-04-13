@@ -1,0 +1,29 @@
+/////////////////////////
+
+///////////  BUILD topicfs_dev image /////////////
+
+podman build \
+  --format docker \
+  -f Dockerfile.dev \
+  -t localhost/topicfs_dev:latest \
+  --build-arg HOST_UID=$(id -u) \
+  --build-arg HOST_GID=$(id -g) \
+  --build-arg USERNAME=$(id -un) \
+  .
+///////////  COMPOSE (and run) topicfs_dev image /////////////
+podman run -d \
+  --name topicfs_dev \
+  --hostname topicfs-container \
+  --network host \
+  --privileged \
+  --userns keep-id \
+  --cap-add SYS_NICE \
+  -e TZ=Europe/Berlin \
+  -e QT_X11_NO_MITSHM=1 \
+  -e DISPLAY=$DISPLAY \
+  -e TOPICFS_INSTALL=/home/jack/dev/smithjack.net/topicfs/install \
+  -v /home/jack/dev/smithjack.net:/home/jack/dev/smithjack.net:z \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -it \
+  localhost/topicfs_dev:latest \
+  /bin/bash

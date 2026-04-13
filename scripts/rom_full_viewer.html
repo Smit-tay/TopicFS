@@ -292,6 +292,15 @@ input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
     </div>
 
     <div class="panel-section">
+      <div class="panel-label">Reach tolerance</div>
+      <div class="ctrl-row">
+        <label>Dist mm</label>
+        <input type="range" id="dist-tol" min="1" max="60" value="20">
+        <span class="val-display" id="dist-tol-val">20</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
       <div class="panel-label">Legend</div>
       <div class="legend-item"><div class="legend-dot" style="background:#00e5a0"></div>Reached</div>
       <div class="legend-item"><div class="legend-dot" style="background:#ff3a20"></div>Out of reach</div>
@@ -593,6 +602,7 @@ let state = {
     ptSize: 3,
     zMin: -120,
     zMax: 190,
+    distTolerance: 20,
 };
 
 function parseCSV(text) {
@@ -626,7 +636,9 @@ function buildScene() {
     let reached = 0;
 
     rows.forEach((row, idx) => {
-        const missed = row.reached !== 'true';
+        const dist = parseFloat(row.dist) || 0;
+        const skipped = row.action_succeeded === 'false' && parseFloat(row.actual_x) === 0 && parseFloat(row.actual_y) === 0;
+        const missed = skipped || dist > state.distTolerance;
         if (!missed) reached++;
 
         const hasPlot = row.plot_x !== undefined;
@@ -743,6 +755,14 @@ bindCheck('show-hull', 'showHull');
 bindCheck('show-reach', 'showReach');
 bindCheck('show-miss', 'showMiss');
 
+// dist tolerance slider — raw mm value, triggers full rebuild
+document.getElementById('dist-tol').addEventListener('input', () => {
+    const v = parseInt(document.getElementById('dist-tol').value);
+    state.distTolerance = v;
+    document.getElementById('dist-tol-val').textContent = v;
+    if (allRows.length) buildScene();
+});
+
 // Z filter triggers full rebuild (filters points)
 document.getElementById('z-min').addEventListener('change', () => { if (allRows.length) buildScene(); });
 document.getElementById('z-max').addEventListener('change', () => { if (allRows.length) buildScene(); });
@@ -824,7 +844,8 @@ renderer.domElement.addEventListener('mousemove', e => {
             az + rad +
             `<span class="lbl">Commanded:</span> (${parseFloat(row.cmd_x).toFixed(1)}, ${parseFloat(row.cmd_y).toFixed(1)}, ${parseFloat(row.cmd_z).toFixed(1)})<br>` +
             `<span class="lbl">Actual:</span> (${parseFloat(row.actual_x).toFixed(1)}, ${parseFloat(row.actual_y).toFixed(1)}, ${parseFloat(row.actual_z).toFixed(1)})<br>` +
-            `<span class="lbl">Delta:</span> (${parseFloat(row.dx).toFixed(2)}, ${parseFloat(row.dy).toFixed(2)}, ${parseFloat(row.dz).toFixed(2)}) mm`;
+            `<span class="lbl">Delta:</span> (${parseFloat(row.dx).toFixed(2)}, ${parseFloat(row.dy).toFixed(2)}, ${parseFloat(row.dz).toFixed(2)}) mm<br>` +
+            `<span class="lbl">Dist:</span> ${parseFloat(row.dist).toFixed(2)} mm`;
         tooltip.style.display = 'block';
     } else {
         tooltip.style.display = 'none';
