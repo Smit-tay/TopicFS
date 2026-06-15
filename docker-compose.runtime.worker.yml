@@ -1,0 +1,32 @@
+# docker-compose.runtime.worker.yml
+# Runtime compose for TopicFS on worker.
+# Deployed via scripts/deploy_to_worker.sh from NUC.
+# Usage on worker:
+#   cd /opt/topicfs
+#   ./start.sh
+x-podman:
+  in_pod: false
+
+services:
+  topicfs_runtime:
+    image: localhost:5000/topicfs_runtime:latest
+    container_name: topicfs_runtime
+    hostname: topicfs-runtime
+    network_mode: "host"
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    volumes:
+      - /opt/topicfs/install:/home/jack/dev/smithjack.net/topicfs/install:z
+      - /mnt/topicfs_fuse:/mnt/topicfs_fuse:z,shared
+      - /opt/topicfs_typesupport:/opt/topicfs_typesupport:z
+    environment:
+      TZ: Europe/Berlin
+      ROS_DOMAIN_ID: 11
+      TOPICFS_INSTALL: /home/jack/dev/smithjack.net/topicfs/install
+      TOPICFS_MOUNT_POINT: /mnt/topicfs_fuse
+    restart: "no"
+    security_opt:
+      - label=disable
+    cap_add:
+      - SYS_ADMIN

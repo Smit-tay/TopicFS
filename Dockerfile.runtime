@@ -25,7 +25,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ROS_DISTRO=jazzy \
     ROS_DOMAIN_ID=11 \
     TZ=Europe/Berlin \
-    TOPICFS_TYPESUPPORT_DIR=/opt/topicfs_typesupport
+    TOPICFS_TYPESUPPORT_DIR=/opt/topicfs_typesupport \
+    FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 
 # -----------------------------------------------------------------------------
 # Runtime dependencies only.

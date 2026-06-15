@@ -28,6 +28,7 @@ services:
       TZ: Europe/Berlin
       ROS_DOMAIN_ID: 11
       TOPICFS_MOUNT_POINT: /home/jack/fuse_mount
+      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
     restart: unless-stopped
     security_opt:
       - label=disable

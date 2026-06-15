@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // Third-party
@@ -363,6 +364,12 @@ nlohmann::json RosMessageConverter::members_to_json(
 
 // -----------------------------------------------------------------------------
 // Public - json_to_members
+//
+// Strict validation:
+//   - All schema fields must be present in the JSON (no silent defaulting)
+//   - All JSON keys must correspond to schema fields (no silently ignored keys)
+//   - Type mismatches are reported
+// Errors logged to stderr; function returns false on any validation failure.
 // -----------------------------------------------------------------------------
 
 bool RosMessageConverter::json_to_members(
@@ -372,17 +379,61 @@ bool RosMessageConverter::json_to_members(
 {
   using namespace rosidl_typesupport_introspection_cpp;
 
+  if (!json.is_object())
+  {
+    fprintf(stderr,
+      "[RosMessageConverter] JSON is not an object (got %s)\n",
+      json.type_name());
+    return false;
+  }
+
+  // --- Pass 1: build schema field name set and check for missing fields ---
+  std::unordered_set<std::string> schema_fields;
+  schema_fields.reserve(members->member_count_);
+  for (uint32_t i = 0; i < members->member_count_; ++i)
+  {
+    schema_fields.insert(members->members_[i].name_);
+  }
+
+  for (const auto & name : schema_fields)
+  {
+    if (!json.contains(name))
+    {
+      fprintf(stderr,
+        "[RosMessageConverter] Missing required field '%s'. Expected fields:",
+        name.c_str());
+      for (const auto & f : schema_fields)
+      {
+        fprintf(stderr, " %s", f.c_str());
+      }
+      fprintf(stderr, "\n");
+      return false;
+    }
+  }
+
+  // --- Pass 2: check for unknown JSON keys ---
+  for (auto it = json.begin(); it != json.end(); ++it)
+  {
+    if (schema_fields.find(it.key()) == schema_fields.end())
+    {
+      fprintf(stderr,
+        "[RosMessageConverter] Unknown field '%s' in JSON. Expected fields:",
+        it.key().c_str());
+      for (const auto & f : schema_fields)
+      {
+        fprintf(stderr, " %s", f.c_str());
+      }
+      fprintf(stderr, "\n");
+      return false;
+    }
+  }
+
+  // --- Pass 3: populate message (original logic, now safe) ---
   for (uint32_t i = 0; i < members->member_count_; ++i)
   {
     const MessageMember & member = members->members_[i];
     uint8_t * field_ptr = data + member.offset_;
     std::string name(member.name_);
-
-    if (!json.contains(name))
-    {
-      // Field absent from JSON — leave at initialised default, not an error
-      continue;
-    }
 
     const nlohmann::json & val = json[name];
 
@@ -439,12 +490,18 @@ bool RosMessageConverter::json_to_members(
             return json_to_members(sub_members, v, ptr);
           }
           default:
+            fprintf(stderr,
+              "[RosMessageConverter] Unknown type_id %d for field '%s'\n",
+              member.type_id_, name.c_str());
             return false;
         }
         return true;
       }
-      catch (const std::exception &)
+      catch (const std::exception & e)
       {
+        fprintf(stderr,
+          "[RosMessageConverter] Type mismatch on field '%s': %s\n",
+          name.c_str(), e.what());
         return false;
       }
     };
@@ -453,6 +510,9 @@ bool RosMessageConverter::json_to_members(
     {
       if (!val.is_array())
       {
+        fprintf(stderr,
+          "[RosMessageConverter] Field '%s' expected array, got %s\n",
+          name.c_str(), val.type_name());
         return false;
       }
       size_t count = val.size();

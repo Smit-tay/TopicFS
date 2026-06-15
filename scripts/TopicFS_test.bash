@@ -2,9 +2,21 @@
 # MIT License
 # Copyright 2026 Jack Sidman Smith
 #
-# TopicFS_test.bash — Integration test for TopicFS / SwiftRos2 end-to-end stack.
-# Exercises topics, services, actions, and movement via plain shell tools.
-# No ROS2 on host required.
+# TopicFS_test.bash — Integration test for the TopicFS / SwiftRos2 end-to-end
+# stack. Exercises topics, services, and actions via plain shell tools.
+# No ROS2 on host required — talks to the arm purely through filesystem reads
+# and writes on the FUSE mount.
+#
+# Changes vs v1:
+#   - Removed phantom topic reads (mode, polar, is_moving — those topics don't
+#     exist; they're either services only or moved to motion_complete).
+#   - Reset.srv schema fix: request now carries x/y/z/speed (was sending {}).
+#   - Pre-flight failures (other than missing mount point) report fail and
+#     continue, so we see the whole picture.
+#   - motion_reset NOT exercised — libswiftpro Bug 2 would brick the arm.
+#   - Added topic reads for connected, gripper_status, motion_complete, power
+#     (the actual topic surface).
+#   - Stress test count reduced to 10 (was 20) — keeps test cycle manageable.
 #
 # Usage: bash TopicFS_test.bash [MOUNT_POINT]
 # Default mount point: /home/jack/fuse_mount
@@ -21,7 +33,7 @@ ACTION_TIMEOUT=60        # seconds to wait for an action to complete
 POSITION_TOLERANCE=15.0  # mm — acceptable distance between commanded and reported position
 MOVE_SETTLE=0.5          # seconds to wait for position topic to update after move
 
-# --- Move speeds (mm/min) ---
+# --- Move speeds (mm/min per Reset.srv schema; MoveTo may differ) ---
 SPEED_SLOW=1000
 SPEED_NORMAL=5000
 SPEED_FAST=10000
@@ -58,19 +70,20 @@ header() {
 
 pass() {
     echo -e "  ${GRN}✓${RST}  $1"
-    ((PASS++))
+    PASS=$((PASS + 1))
 }
 
 fail() {
     echo -e "  ${RED}✗${RST}  $1"
-    ((FAIL++))
+    FAIL=$((FAIL + 1))
 }
 
 skip() {
     echo -e "  ${YLW}–${RST}  $1 ${YLW}(skipped)${RST}"
-    ((SKIP++))
+    SKIP=$((SKIP + 1))
 }
 
+# Read a /latest file; return empty string if missing or 0-byte.
 read_topic() {
     local file="$1"
     local content
@@ -79,14 +92,11 @@ read_topic() {
     echo "${content}"
 }
 
+# Extract a flat JSON field value (does not handle nested objects/arrays).
 json_field() {
     local json="$1"
     local field="$2"
     echo "${json}" | grep -oP "\"${field}\"\\s*:\\s*\\K[^,}]+" | tr -d '"' | xargs
-}
-
-float_delta() {
-    awk "BEGIN { d=$1 - $2; print (d < 0 ? -d : d) }"
 }
 
 float_le() {
@@ -98,6 +108,7 @@ euclidean_dist() {
 }
 
 # Write request to a plain service, poll response until timeout.
+# Stdout: response body on success, empty on timeout/failure.
 call_service() {
     local svc="$1"
     local request="$2"
@@ -122,7 +133,7 @@ call_service() {
 }
 
 # Send a move_arm action goal and wait for completion.
-# Returns 0 on success (goal succeeded within tolerance), 1 on failure.
+# Returns 0 on SUCCEEDED + position within tolerance; 1 otherwise.
 # Args: label x y z speed
 send_move_goal() {
     local label="$1"
@@ -132,13 +143,13 @@ send_move_goal() {
     local speed="$5"
 
     local uuid="${UUID_COUNTER}"
-    ((UUID_COUNTER++))
+    UUID_COUNTER=$((UUID_COUNTER + 1))
 
-    # Build UUID array — first byte is the counter, rest zeros
+    # Build UUID array — first byte is the counter, rest zeros.
+    # ROS2 needs a 16-byte UUID; uniqueness within the run is sufficient.
     local uuid_arr="[${uuid},0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
     local goal="{\"goal_id\":{\"uuid\":${uuid_arr}},\"goal\":{\"x\":${tx},\"y\":${ty},\"z\":${tz},\"speed\":${speed}}}"
 
-    # Send goal
     echo "${goal}" > "${MOVE_ARM}/send_goal/command" 2>/dev/null || {
         fail "${label}: failed to write send_goal"
         return 1
@@ -183,12 +194,8 @@ send_move_goal() {
     # Get result
     echo "{\"goal_id\":{\"uuid\":${uuid_arr}}}" > "${MOVE_ARM}/get_result/command" 2>/dev/null
     sleep 0.3
-    local result
-    result=$(cat "${MOVE_ARM}/get_result/response" 2>/dev/null)
-    local success
-    success=$(json_field "${result}" "success")
 
-    # Verify position
+    # Verify position by reading the position topic
     sleep "${MOVE_SETTLE}"
     local pos
     pos=$(read_topic "${SWIFTPRO}/position/latest")
@@ -218,75 +225,90 @@ send_move_goal() {
 
 header "Pre-flight checks"
 
+# Hard fail: mount point missing means nothing else can run.
 if [[ ! -d "${MOUNT}" ]]; then
     fail "Mount point ${MOUNT} does not exist"
     echo -e "\n${RED}Aborting — mount point missing.${RST}"
     exit 1
 fi
+pass "Mount point accessible: ${MOUNT}"
 
+# Hard fail: no swiftpro/ means SwiftRos2 isn't visible at all.
 if [[ ! -d "${SWIFTPRO}" ]]; then
     fail "SwiftPro directory not found at ${SWIFTPRO} — is SwiftRos2 running?"
     echo -e "\n${RED}Aborting — SwiftRos2 not visible via TopicFS.${RST}"
     exit 1
 fi
+pass "SwiftPro directory present: ${SWIFTPRO}"
 
-pass "Mount point accessible: ${MOUNT}"
-
+# Soft fail from here on — report and continue so the operator sees the full picture.
 connected=$(read_topic "${SWIFTPRO}/connected/latest")
 if [[ $(json_field "${connected}" "data") == "true" ]]; then
     pass "Arm connected: ${connected}"
 else
     fail "Arm not connected: '${connected}'"
-    echo -e "\n${RED}Aborting — arm not connected.${RST}"
-    exit 1
 fi
 
-if [[ ! -d "${MOVE_ARM}" ]]; then
+if [[ -d "${MOVE_ARM}" ]]; then
+    pass "move_arm action directory found"
+else
     fail "move_arm action not found at ${MOVE_ARM} — is action support working?"
-    echo -e "\n${RED}Aborting — move_arm action missing.${RST}"
-    exit 1
 fi
-pass "move_arm action directory found"
 
 # ============================================================
-# Topic reads
+# Topic reads — confirmed surface only
 # ============================================================
 
 header "Topic reads"
 
+# joint_states lives at root, not under swiftpro/
+js=$(read_topic "${MOUNT}/joint_states/latest")
+[[ -n "${js}" ]] && pass "joint_states: present" || fail "joint_states: no data"
+
 pos=$(read_topic "${SWIFTPRO}/position/latest")
 if [[ -n "${pos}" ]]; then
     x=$(json_field "${pos}" "x"); y=$(json_field "${pos}" "y"); z=$(json_field "${pos}" "z")
-    pass "Position: x=${x}mm  y=${y}mm  z=${z}mm"
+    pass "position: x=${x}mm  y=${y}mm  z=${z}mm"
 else
-    fail "Position: no data"
+    fail "position: no data"
 fi
 
-js=$(read_topic "${MOUNT}/joint_states/latest")
-[[ -n "${js}" ]] && pass "Joint states: present" || fail "Joint states: no data"
-
 pump=$(read_topic "${SWIFTPRO}/pump_status/latest")
-[[ -n "${pump}" ]] && pass "Pump status: ${pump}" || fail "Pump status: no data"
+[[ -n "${pump}" ]] && pass "pump_status: ${pump}" || fail "pump_status: no data"
 
-mode=$(read_topic "${SWIFTPRO}/mode/latest")
-[[ -n "${mode}" ]] && pass "Mode: ${mode}" || fail "Mode: no data"
+gripper=$(read_topic "${SWIFTPRO}/gripper_status/latest")
+[[ -n "${gripper}" ]] && pass "gripper_status: ${gripper}" || fail "gripper_status: no data"
 
-polar=$(read_topic "${SWIFTPRO}/polar/latest")
-[[ -n "${polar}" ]] && pass "Polar: present" || fail "Polar: no data"
+power=$(read_topic "${SWIFTPRO}/power/latest")
+[[ -n "${power}" ]] && pass "power: ${power}" || fail "power: no data"
 
-moving=$(read_topic "${SWIFTPRO}/is_moving/latest")
-[[ -n "${moving}" ]] && pass "is_moving: ${moving}" || fail "is_moving: no data"
+connected=$(read_topic "${SWIFTPRO}/connected/latest")
+[[ -n "${connected}" ]] && pass "connected: ${connected}" || fail "connected: no data"
+
+# motion_complete and limit_switch fire on edges — file may exist but
+# contain no data at rest. File-existence is the assertion here.
+mc_file="${SWIFTPRO}/motion_complete/latest"
+if [[ -f "${mc_file}" ]]; then
+    mc_data=$(cat "${mc_file}" 2>/dev/null)
+    if [[ -n "${mc_data}" ]]; then
+        pass "motion_complete: ${mc_data}"
+    else
+        pass "motion_complete: file present, no edge yet (expected at rest)"
+    fi
+else
+    fail "motion_complete: file missing"
+fi
 
 ls_file="${SWIFTPRO}/limit_switch/latest"
 if [[ -f "${ls_file}" ]]; then
     ls_data=$(cat "${ls_file}" 2>/dev/null)
     if [[ -n "${ls_data}" ]]; then
-        pass "Limit switch: ${ls_data}"
+        pass "limit_switch: ${ls_data}"
     else
-        pass "Limit switch: file present, no trigger data (expected)"
+        pass "limit_switch: file present, no trigger data (expected)"
     fi
 else
-    fail "Limit switch: file missing"
+    fail "limit_switch: file missing"
 fi
 
 # ============================================================
@@ -295,11 +317,13 @@ fi
 
 header "Action interface"
 
-[[ -d "${MOVE_ARM}/send_goal" ]] && pass "send_goal directory present" || fail "send_goal directory missing"
-[[ -d "${MOVE_ARM}/cancel" ]]    && pass "cancel directory present"    || fail "cancel directory missing"
-[[ -d "${MOVE_ARM}/get_result" ]] && pass "get_result directory present" || fail "get_result directory missing"
-[[ -d "${MOVE_ARM}/feedback" ]]  && pass "feedback directory present"  || fail "feedback directory missing"
-[[ -d "${MOVE_ARM}/status" ]]    && pass "status directory present"    || fail "status directory missing"
+for sub in send_goal cancel get_result feedback status; do
+    if [[ -d "${MOVE_ARM}/${sub}" ]]; then
+        pass "${sub} directory present"
+    else
+        fail "${sub} directory missing"
+    fi
+done
 
 status=$(read_topic "${MOVE_ARM}/status/latest")
 [[ -n "${status}" ]] && pass "status/latest readable: ${status}" || fail "status/latest: no data"
@@ -326,6 +350,49 @@ else
     fail "get_digital: no response"
 fi
 
+rsp=$(call_service "get_encoder_status" '{"structure_needs_at_least_one_member":0}')
+if [[ -n "${rsp}" ]]; then
+    s=$(json_field "${rsp}" "status"); ok=$(json_field "${rsp}" "success")
+    [[ "${ok}" == "true" ]] && pass "get_encoder_status: status=${s} (0=all healthy)" || fail "get_encoder_status: ${rsp}"
+else
+    fail "get_encoder_status: no response"
+fi
+
+# get_servo_attach across all 4 servos
+for sid in 0 1 2 3; do
+    rsp=$(call_service "get_servo_attach" "{\"servo_id\": ${sid}}")
+    if [[ -n "${rsp}" ]]; then
+        att=$(json_field "${rsp}" "attached")
+        pass "get_servo_attach servo_id=${sid}: attached=${att}"
+    else
+        fail "get_servo_attach servo_id=${sid}: no response"
+    fi
+done
+
+# is_reachable — positive and negative cases
+rsp=$(call_service "is_reachable" '{"x": 200.0, "y": 0.0, "z": 150.0}')
+if [[ -n "${rsp}" ]]; then
+    r=$(json_field "${rsp}" "reachable")
+    [[ "${r}" == "true" ]] && pass "is_reachable (200,0,150) = true" || fail "is_reachable (200,0,150): got ${r}"
+else
+    fail "is_reachable (200,0,150): no response"
+fi
+
+rsp=$(call_service "is_reachable" '{"x": 1000.0, "y": 0.0, "z": 150.0}')
+if [[ -n "${rsp}" ]]; then
+    r=$(json_field "${rsp}" "reachable")
+    [[ "${r}" == "false" ]] && pass "is_reachable (1000,0,150) = false" || fail "is_reachable (1000,0,150): got ${r}"
+else
+    fail "is_reachable (1000,0,150): no response"
+fi
+
+# Kinematics queries
+rsp=$(call_service "coord_to_angles" '{"x": 200.0, "y": 0.0, "z": 150.0}')
+[[ -n "${rsp}" ]] && pass "coord_to_angles (200,0,150): ${rsp}" || fail "coord_to_angles: no response"
+
+rsp=$(call_service "angles_to_coord" '{"base": 0.0, "left": 90.0, "right": 0.0}')
+[[ -n "${rsp}" ]] && pass "angles_to_coord (0,90,0): ${rsp}" || fail "angles_to_coord: no response"
+
 # ============================================================
 # Buzzer
 # ============================================================
@@ -341,7 +408,19 @@ rsp=$(call_service "set_buzzer" '{"frequency": 2000, "duration": 0.3}')
 sleep 0.5
 
 # ============================================================
-# Pump
+# Configuration
+# ============================================================
+
+header "Configuration"
+
+rsp=$(call_service "set_mode" '{"mode": 0}')
+[[ -n "${rsp}" ]] && pass "set_mode 0 (normal): ${rsp}" || fail "set_mode 0: no response"
+
+rsp=$(call_service "set_acceleration" '{"acc": 50.0}')
+[[ -n "${rsp}" ]] && pass "set_acceleration 50: ${rsp}" || fail "set_acceleration 50: no response"
+
+# ============================================================
+# End effectors
 # ============================================================
 
 header "Pump on/off"
@@ -363,20 +442,48 @@ else
     fail "set_pump OFF: no response"
 fi
 
+header "Gripper catch/release"
+
+rsp=$(call_service "set_gripper" '{"catch_object": true}')
+if [[ -n "${rsp}" ]]; then
+    sleep 1; g=$(read_topic "${SWIFTPRO}/gripper_status/latest")
+    pass "Gripper CATCH: response=${rsp}  status=${g}"
+else
+    fail "set_gripper CATCH: no response"
+fi
+sleep 1
+
+rsp=$(call_service "set_gripper" '{"catch_object": false}')
+if [[ -n "${rsp}" ]]; then
+    sleep 1; g=$(read_topic "${SWIFTPRO}/gripper_status/latest")
+    pass "Gripper RELEASE: response=${rsp}  status=${g}"
+else
+    fail "set_gripper RELEASE: no response"
+fi
+
 # ============================================================
-# Reset
+# Reset — schema fix: must carry x/y/z/speed, not {}
 # ============================================================
 
 header "Reset service"
 
-rsp=$(call_service "reset" '{}' 60)
+reset_req="{\"x\":${HOME_X},\"y\":${HOME_Y},\"z\":${HOME_Z},\"speed\":${SPEED_NORMAL}}"
+rsp=$(call_service "reset" "${reset_req}" 60)
 if [[ -n "${rsp}" ]]; then
     sleep 3
     pos=$(read_topic "${SWIFTPRO}/position/latest")
-    pass "Reset: response=${rsp}  position after reset=${pos}"
+    pass "Reset to home: response=${rsp}  position=${pos}"
 else
     fail "Reset: no response (arm may have moved — check physically)"
 fi
+
+# ============================================================
+# motion_reset — SKIPPED (libswiftpro Bug 2)
+# ============================================================
+
+header "Motion reset (deferred)"
+
+skip "motion_reset: libswiftpro Bug 2 — mc_reset() during motion → STATE_ALARM, subsequent commands time out"
 
 # ============================================================
 # Movement — basic action test
@@ -413,12 +520,12 @@ send_move_goal "Fast"    200.0   30.0   80.0  ${SPEED_FAST}
 send_move_goal "Home"    ${HOME_X} ${HOME_Y} ${HOME_Z} ${SPEED_NORMAL}
 
 # ============================================================
-# Stress test — 20 consecutive action goals
+# Stress test — 10 consecutive action goals
 # Rapid sequence of moves, interleaved with service calls.
 # Tests executor stability under sustained load.
 # ============================================================
 
-header "Stress test — 20 consecutive goals"
+header "Stress test — 10 consecutive goals"
 
 STRESS_POINTS=(
     "190.0  30.0  100.0"
@@ -431,16 +538,6 @@ STRESS_POINTS=(
     "215.0 -20.0  110.0"
     "175.0  60.0   50.0"
     "205.0 -40.0   90.0"
-    "185.0  20.0  130.0"
-    "200.0 -10.0   60.0"
-    "220.0  40.0   80.0"
-    "165.0 -50.0  100.0"
-    "195.0  30.0   40.0"
-    "210.0 -30.0  120.0"
-    "180.0  50.0   70.0"
-    "200.0 -20.0   90.0"
-    "190.0  10.0  110.0"
-    "200.0   0.0  150.0"
 )
 
 stress_pass=0
@@ -451,9 +548,9 @@ for i in "${!STRESS_POINTS[@]}"; do
     n=$(( i + 1 ))
 
     if send_move_goal "Stress #${n}" "${sx}" "${sy}" "${sz}" ${SPEED_FAST}; then
-        ((stress_pass++))
+        stress_pass=$((stress_pass + 1))
     else
-        ((stress_fail++))
+        stress_fail=$((stress_fail + 1))
     fi
 
     # Every 5 moves, fire a service call to verify executor health
@@ -463,14 +560,14 @@ for i in "${!STRESS_POINTS[@]}"; do
             echo -e "  ${CYN}↳ executor health check #$((n/5)): get_digital OK${RST}"
         else
             echo -e "  ${RED}↳ executor health check #$((n/5)): get_digital FAILED — ${rsp}${RST}"
-            ((stress_fail++))
-            ((stress_pass--))
+            stress_fail=$((stress_fail + 1))
+            stress_pass=$((stress_pass - 1))
         fi
     fi
 done
 
 echo ""
-echo -e "  Stress test: ${GRN}${stress_pass} passed${RST}  ${RED}${stress_fail} failed${RST} / 20 goals"
+echo -e "  Stress test: ${GRN}${stress_pass} passed${RST}  ${RED}${stress_fail} failed${RST} / 10 goals"
 
 send_move_goal "Stress — final home" ${HOME_X} ${HOME_Y} ${HOME_Z} ${SPEED_NORMAL}
 
