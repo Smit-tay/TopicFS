@@ -34,9 +34,9 @@ POSITION_TOLERANCE=15.0  # mm — acceptable distance between commanded and repo
 MOVE_SETTLE=0.5          # seconds to wait for position topic to update after move
 
 # --- Move speeds (mm/min per Reset.srv schema; MoveTo may differ) ---
-SPEED_SLOW=1000
-SPEED_NORMAL=5000
-SPEED_FAST=10000
+SPEED_SLOW=10
+SPEED_NORMAL=50
+SPEED_FAST=100
 
 # --- Home position ---
 HOME_X=200.0

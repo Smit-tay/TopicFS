@@ -13,7 +13,7 @@
 # Code changes only require:
 #   NF_00 (colcon build) → NF_03 (restart runtime container)
 
-FROM ros:jazzy-ros-core
+FROM ros:jazzy-ros-base
 
 # -----------------------------------------------------------------------------
 # Environment
@@ -35,6 +35,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # -----------------------------------------------------------------------------
 
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         fuse3 \
         ros-jazzy-rclcpp \

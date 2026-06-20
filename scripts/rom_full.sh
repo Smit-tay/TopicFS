@@ -33,8 +33,8 @@
 #
 # Returns to centre ONCE per azimuth slice (safe transit between slices).
 #
-# Grid: 31 azimuths × 10 radii × 15 Z heights = 4,650 points
-# Estimated runtime: ~3.5 hours at 5000 mm/min sweep speed.
+# Grid: 37 azimuths × 10 radii × 16 Z heights = 5,920 points
+# Estimated runtime: ~4.5 hours at 5000 mm/min sweep speed.
 #
 # Output CSV is compatible with rom_full_viewer.html (convex hull envelope).
 #
@@ -57,9 +57,9 @@ DEBUG="${DEBUG:-0}"
 
 # ── Parameters ────────────────────────────────────────────────────────────────
 
-MOVE_SPEED=5000           # mm/min — sweep moves
+MOVE_SPEED=50           # mm/min — sweep moves
 MOVE_SETTLE=0.5           # seconds — wait after fresh position detected before final read
-TRANSIT_SPEED=6000        # mm/min — return to centre between azimuth slices
+TRANSIT_SPEED=200        # mm/min — return to centre between azimuth slices
 ACTION_TIMEOUT=60         # seconds — max wait for action SUCCEEDED status
 POSITION_FRESH_TIMEOUT=5  # seconds — max wait for position topic to update after move
 POSITION_TOLERANCE=20.0   # mm — euclidean distance threshold to declare a move "reached"
@@ -76,20 +76,20 @@ MIN_FORWARD_X=100         # mm — minimum X (forward) component of any commande
 # Centre — safe known-reachable transit position (firmware coords)
 CENTRE_X=200.0
 CENTRE_Y=0.0
-CENTRE_Z=100.0
+CENTRE_Z=150.0
 
 # Grid definition
-AZ_MIN=-75    # degrees — right side of arm
-AZ_MAX=75     # degrees — left side of arm
+AZ_MIN=-90    # degrees — right side of arm
+AZ_MAX=90     # degrees — left side of arm
 AZ_STEP=5     # degrees → 31 slices
 
 R_MIN=150     # mm — inner radii removed (unreachable empirically)
 R_MAX=320     # mm — workspace limit per spec
 R_STEPS=10    # → 10 radii per slice
 
-Z_MIN=-120    # mm — near floor (empirically verified at -126mm)
+Z_MIN=-150    # mm — below base plane (empirically finding real floor; observed >= -120)
 Z_MAX=190     # mm — near upper limit
-Z_STEPS=15    # → ~22mm spacing across 310mm range
+Z_STEPS=16    # → ~22mm spacing across 340mm range
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'

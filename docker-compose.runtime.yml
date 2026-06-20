@@ -1,33 +1,37 @@
 # docker-compose.runtime.yml
-# Runtime compose for TopicFS on the NUC.
-# Usage:
-#   podman-compose -f docker-compose.runtime.yml up -d
+# Runtime compose for TopicFS on worker.
+# Deployed via deploy_to_worker.sh from NUC.
+# Usage (rootful podman — required for FUSE mount propagation):
+#   sudo docker-compose -f /opt/topicfs/docker-compose.runtime.worker.yml up -d
 #
 # Prerequisites:
-#   1. colcon build completed (NF_00)
-#   2. Runtime image built (see below)
-#   3. Mount point directory exists: mkdir -p ~/fuse_mount
+#   1. colcon build completed on NUC
+#   2. install tree rsynced to /opt/topicfs/install on worker
+#   3. Runtime image built on NUC and pushed to worker:5000
+#   4. /mnt/topicfs exists and is a shared bind mount
+#   5. swiftpro_resources typesupport deployed to /opt/topicfs_typesupport
+
 x-podman:
   in_pod: false
-  
+
 services:
   topicfs_runtime:
-    image: localhost/topicfs_runtime:latest
+    image: localhost:5000/topicfs_runtime:latest
     container_name: topicfs_runtime
     hostname: topicfs-runtime
-    userns_mode: "keep-id"
     network_mode: "host"
     privileged: true
     devices:
       - /dev/fuse:/dev/fuse
     volumes:
-      - /home/jack/dev/smithjack.net/topicfs/install:/home/jack/dev/smithjack.net/topicfs/install:z
-      - /home/jack/fuse_mount:/home/jack/fuse_mount:z,shared
+      - /opt/topicfs/install:/home/jack/dev/smithjack.net/topicfs/install:z
+      - /mnt/topicfs:/mnt/topicfs:z,shared
       - /opt/topicfs_typesupport:/opt/topicfs_typesupport:z
     environment:
       TZ: Europe/Berlin
       ROS_DOMAIN_ID: 11
-      TOPICFS_MOUNT_POINT: /home/jack/fuse_mount
+      TOPICFS_INSTALL: /home/jack/dev/smithjack.net/topicfs/install
+      TOPICFS_MOUNT_POINT: /mnt/topicfs
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
     restart: unless-stopped
     security_opt:
