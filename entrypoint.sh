@@ -7,6 +7,8 @@
 # Environment variables:
 #   TOPICFS_INSTALL     — path to colcon install tree
 #   TOPICFS_MOUNT_POINT — FUSE mount point
+#   TOPICFS_ALLOWED_SERVICES — optional: only these appear, as a YAML list,
+#                              e.g. "['/swiftpro/move_to']". Unset exposes all.
 
 source /opt/ros/jazzy/setup.bash
 
@@ -15,7 +17,7 @@ MOUNT_POINT=${TOPICFS_MOUNT_POINT:-${HOME}/fuse_mount}
 
 if [ ! -f "${TOPICFS_INSTALL}/setup.bash" ]; then
     echo "ERROR: TopicFS install not found at ${TOPICFS_INSTALL}" >&2
-    echo "  Set TOPICFS_INSTALL or run NF_00 (colcon build) first." >&2
+    echo "  Set TOPICFS_INSTALL or run colcon build first." >&2
     exit 1
 fi
 
@@ -49,9 +51,12 @@ trap cleanup EXIT
 
 NODE_PID=""
 
-ros2 run topic_fs topic_fs \
-    --ros-args \
-    -p mount_point:="${MOUNT_POINT}" &
+PARAMS=(-p mount_point:="${MOUNT_POINT}")
+if [ -n "${TOPICFS_ALLOWED_SERVICES:-}" ]; then
+    PARAMS+=(-p allowed_services:="${TOPICFS_ALLOWED_SERVICES}")
+fi
+
+ros2 run topic_fs topic_fs --ros-args "${PARAMS[@]}" &
 
 NODE_PID=$!
 wait "${NODE_PID}"

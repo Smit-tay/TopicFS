@@ -11,7 +11,7 @@
 #
 # This image only needs rebuilding when system-level dependencies change.
 # Code changes only require:
-#   NF_00 (colcon build) → NF_03 (restart runtime container)
+#   colcon build → restart runtime container
 
 FROM ros:jazzy-ros-base
 

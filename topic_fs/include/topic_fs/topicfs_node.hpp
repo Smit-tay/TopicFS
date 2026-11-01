@@ -109,6 +109,13 @@ private:
   std::string                        mount_point_;
   std::chrono::milliseconds          notification_interval_{100};
   std::vector<std::string>           writable_topics_;
+  std::vector<std::string>           allowed_services_;  // empty = expose all
+
+  // True if this service or action may appear in the filesystem.
+  bool is_allowed(const std::string& name) const;
+  // Does the call. call_service() records whatever it returns, failures too.
+  std::string send_service_request(const std::string& service,
+                                   const nlohmann::json& request);
 
   // ── Discovery ──────────────────────────────────────────────────────────────
   rclcpp::TimerBase::SharedPtr       discovery_timer_;

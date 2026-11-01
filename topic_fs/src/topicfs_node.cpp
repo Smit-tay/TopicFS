@@ -71,6 +71,8 @@ topicfsNode::topicfsNode() : Node("topicfs_node")
 {
   declare_parameter<std::vector<std::string>>("writable_topics",
                                               std::vector<std::string>{});
+  allowed_services_ = declare_parameter<std::vector<std::string>>(
+    "allowed_services", std::vector<std::string>{});
   declare_parameter<int>("notification_interval_ms", 100);
   declare_parameter<int>("discovery_interval_ms", 10000);
 
@@ -114,6 +116,12 @@ topicfsNode::topicfsNode() : Node("topicfs_node")
   for (const auto& t : writable_topics_)
   {
     RCLCPP_INFO(get_logger(), "  writable: %s", t.c_str());
+  }
+  RCLCPP_INFO(get_logger(), "Allowed services      : %s",
+              allowed_services_.empty() ? "all" : std::to_string(allowed_services_.size()).c_str());
+  for (const auto& s : allowed_services_)
+  {
+    RCLCPP_INFO(get_logger(), "  allowed: %s", s.c_str());
   }
 
   discovery_timer_ = create_wall_timer(
@@ -290,6 +298,25 @@ std::optional<ActionEntry> topicfsNode::get_action_entry(const std::string& acti
 std::string topicfsNode::call_service(
   const std::string& service, const nlohmann::json& request)
 {
+  std::string result = send_service_request(service, request);
+
+  // Failures are recorded too, so the response file never shows an older
+  // success after a call that failed.
+  std::lock_guard<std::mutex> lock(services_mutex_);
+  last_responses_[service] = result;
+  return result;
+}
+
+bool topicfsNode::is_allowed(const std::string& name) const
+{
+  return allowed_services_.empty()
+         || std::find(allowed_services_.begin(), allowed_services_.end(), name)
+            != allowed_services_.end();
+}
+
+std::string topicfsNode::send_service_request(
+  const std::string& service, const nlohmann::json& request)
+{
   rclcpp::GenericClient::SharedPtr client;
   std::string service_type;
   {
@@ -396,14 +423,7 @@ std::string topicfsNode::call_service(
   nlohmann::json json_response = RosMessageConverter::members_to_json(
     resp_members, static_cast<const uint8_t*>(response.get()));
 
-  std::string result = json_response.dump();
-
-  {
-    std::lock_guard<std::mutex> lock(services_mutex_);
-    last_responses_[service] = result;
-  }
-
-  return result;
+  return json_response.dump();
 }
 
 // -----------------------------------------------------------------------------
@@ -445,6 +465,17 @@ void topicfsNode::subscribe_to_topic(
     rclcpp::QoS qos(10);
     qos.reliable();
     qos.durability_volatile();
+
+    // A latched topic only hands its last value to a transient_local reader,
+    // and that reader cannot match a volatile publisher, so follow the publisher.
+    for (const auto& info : get_publishers_info_by_topic(topic_name))
+    {
+      if (info.qos_profile().durability() == rclcpp::DurabilityPolicy::TransientLocal)
+      {
+        qos.transient_local();
+        break;
+      }
+    }
 
     auto sub = create_generic_subscription(
       topic_name, topic_type, qos,
@@ -556,7 +587,7 @@ void topicfsNode::discover_actions()
 
   for (const auto& [action_name, types] : names_and_types)
   {
-    if (types.empty()) { continue; }
+    if (types.empty() || !is_allowed(action_name)) { continue; }
 
     {
       std::lock_guard<std::mutex> lock(services_mutex_);
@@ -713,6 +744,8 @@ void topicfsNode::discover_services()
 
     // Action internals are handled by discover_actions() — suppress raw entries
     if (is_action_internal(service)) { continue; }
+
+    if (!is_allowed(service)) { continue; }
 
     {
       std::lock_guard<std::mutex> lock(services_mutex_);

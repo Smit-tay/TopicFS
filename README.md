@@ -16,23 +16,23 @@ Just files.
 
 ```bash
 # Read live joint angles from a robot arm
-cat ~/fuse_mount/joint_states/latest
+cat /mnt/topicfs/joint_states/latest
 {"name":["Joint1","Joint2","Joint3"],"position":[1.45,1.12,1.26],...}
 
 # Get the arm's current XYZ position
-cat ~/fuse_mount/swiftpro/position/latest
+cat /mnt/topicfs/swiftpro/position/latest
 {"x":178.8,"y":-22.0,"z":8.8}
 
 # Move the arm — by writing JSON to a file
 echo '{"x":200.0,"y":0.0,"z":150.0,"speed":1000,"wait":true}' \
-  > ~/fuse_mount/swiftpro/move_to/command
+  > /mnt/topicfs/swiftpro/move_to/command
 
 # Check if it worked
-cat ~/fuse_mount/swiftpro/move_to/response
+cat /mnt/topicfs/swiftpro/move_to/response
 {"error_code":0,"message":"OK","success":true}
 
 # Turn the vacuum pump on
-echo '{"on": true}' > ~/fuse_mount/swiftpro/set_pump/command
+echo '{"on": true}' > /mnt/topicfs/swiftpro/set_pump/command
 ```
 
 That is it. No `ros2 topic echo`. No `rclpy`. No environment sourcing. No DDS
@@ -93,7 +93,7 @@ container. They just read files.
 ## Filesystem Layout
 
 ```
-~/fuse_mount/
+/mnt/topicfs/
 ├── joint_states/
 │   ├── latest          ← latest message as JSON (read-only, live)
 │   └── info            ← topic type string
@@ -151,7 +151,7 @@ never an image rebuild.
 ### Development Image (`Dockerfile`)
 
 Used on the development machine for building TopicFS. Contains the full ROS2
-Jazzy development toolchain, clangd for IDE integration (Geany + LSP), colcon,
+Jazzy development toolchain, clangd for IDE integration, colcon,
 and all build-time dependencies including `libfuse3-dev` and `nlohmann-json3-dev`.
 
 ```bash
@@ -163,7 +163,7 @@ podman build --format docker \
   -t topicfs_topicfs .
 
 # Start the dev container
-podman-compose up -d
+docker-compose -f docker-compose.dev.yml up -d
 
 # Build TopicFS inside the dev container
 podman exec topicfs bash -c \
@@ -219,33 +219,23 @@ created inside the container will not propagate back to the host.
 
 ```bash
 # Run once before starting the runtime container (does not survive reboot — see below)
-sudo mount --bind /home/jack/fuse_mount /home/jack/fuse_mount
-sudo mount --make-shared /home/jack/fuse_mount
+sudo mount --bind /mnt/topicfs /mnt/topicfs
+sudo mount --make-shared /mnt/topicfs
 
 # Verify
-findmnt /home/jack/fuse_mount
+findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION /mnt/topicfs
 # Should show the mount with shared propagation
 ```
 
-**Making this persistent across reboots** — add a systemd mount unit or
-`/etc/fstab` entry. The quadlet approach is recommended (same as the registry
-service):
+**Making this persistent across reboots:** add this line to `/etc/fstab`:
 
-```ini
-# /etc/systemd/system/home-jack-fuse_mount.mount
-[Unit]
-Description=Shared bind mount for TopicFS FUSE propagation
-Before=topicfs-runtime.service
-
-[Mount]
-What=/home/jack/fuse_mount
-Where=/home/jack/fuse_mount
-Type=none
-Options=bind,shared
-
-[Install]
-WantedBy=multi-user.target
 ```
+/mnt/topicfs /mnt/topicfs none bind,shared,nofail 0 0
+```
+
+**On worker,** `/opt/topicfs/start.sh` (`scripts/worker_start.sh`) also clears any
+stale FUSE mount and recreates the container, and `/opt/topicfs/stop.sh`
+(`scripts/worker_stop.sh`) stops it.
 
 ### `allow_other` — Non-Root Host Access
 
@@ -277,28 +267,16 @@ the TopicFS mount point without any special permissions.
 ### Starting the Runtime Container
 
 ```bash
-# Ensure mount point exists and is shared (see above)
-mkdir -p /home/jack/fuse_mount
-
-sudo podman run -d \
-  --name topicfs_runtime \
-  --network host \
-  --privileged \
-  --device /dev/fuse \
-  -v /home/jack/fuse_mount:/home/jack/fuse_mount:shared \
-  -v /home/jack/dev/smithjack.net/topicfs/install:/home/jack/dev/smithjack.net/topicfs/install \
-  -v /opt/topicfs_typesupport:/opt/topicfs_typesupport \
-  -e ROS_DOMAIN_ID=11 \
-  -e TOPICFS_MOUNT_POINT=/home/jack/fuse_mount \
-  --cap-add SYS_ADMIN \
-  localhost/topicfs_runtime:latest
+# On worker, after scripts/deploy_to_worker.sh
+/opt/topicfs/start.sh
 ```
 
-Key flags:
-- `--privileged` + `--device /dev/fuse` + `--cap-add SYS_ADMIN` — required for FUSE
-- `-v .../fuse_mount:.../:shared` — enables mount propagation to host
-- `--network host` — DDS discovery requires host network access
+Key settings in `docker-compose.runtime.yml`:
+- `privileged` + `/dev/fuse` — required for FUSE
+- the mount point volume with `shared` — enables mount propagation to host
+- `network_mode: host` — DDS discovery requires host network access
 - `ROS_DOMAIN_ID=11` — must match all other ROS2 nodes on the network
+- `TOPICFS_ALLOWED_SERVICES` — the only services and actions the filesystem exposes
 
 ---
 
@@ -387,20 +365,11 @@ x86_64, and Humble builds will not work in a Jazzy runtime.
 ### Normal Cycle (after initial setup)
 
 ```
-Edit TopicFS source on host (Geany)
-    → NF_00  colcon build inside dev container
+Edit TopicFS source on host
+    → colcon build inside dev container
     → Restart runtime container
-    → cat ~/fuse_mount/... to verify
+    → cat /mnt/topicfs/... to verify
 ```
-
-### Geany Build Menu Reference
-
-| Entry | Action |
-|---|---|
-| NF_00 TopicFS - Build | colcon build in dev container |
-| NF_01 TopicFS - Clean | remove build/ install/ log/ |
-| NF_02 TopicFS - Lint | colcon test |
-| NF_03 TopicFS - Run | restart runtime container |
 
 ### The `entrypoint.sh`
 
@@ -412,7 +381,7 @@ source /opt/ros/jazzy/setup.bash
 
 # Fail clearly if TopicFS has not been built yet
 if [ ! -f /path/to/topicfs/install/setup.bash ]; then
-    echo "ERROR: TopicFS install not found. Run NF_00 (colcon build) first."
+    echo "ERROR: TopicFS install not found. Run colcon build first."
     exit 1
 fi
 
@@ -435,8 +404,9 @@ exec ros2 run topic_fs topic_fs \
 |---|---|---|
 | `mount_point` | `~/fuse_mount` | FUSE filesystem mount point |
 | `writable_topics` | `[]` | Topics to publish to (creates `command` file) |
+| `allowed_services` | `[]` | Services and actions to expose, by full name. Empty exposes all. The entrypoint sets it from `TOPICFS_ALLOWED_SERVICES` |
 | `notification_interval_ms` | `100` | Minimum ms between inode invalidation notifications |
-| `discovery_interval_ms` | `1000` | How often to scan for new topics/services |
+| `discovery_interval_ms` | `10000` | How often to scan for new topics/services |
 | `fuse_threads` | `hw_concurrency/2` | FUSE worker threads (minimum 2 for poll support) |
 
 ---
@@ -458,15 +428,15 @@ swiftpro_hardware node (worker container)
     publishes → /joint_states, /swiftpro/position, etc.
     serves    → /swiftpro/move_to, /swiftpro/set_pump, etc.
     ↓ DDS (network_mode: host, ROS_DOMAIN_ID=11)
-TopicFS runtime container (NUC, rootful podman)
+TopicFS runtime container (worker, rootful podman)
     discovers topics and services automatically
     mounts FUSE filesystem
     ↓ shared mount propagation
-~/fuse_mount/ (NUC host filesystem)
+/mnt/topicfs/ (worker host filesystem)
     ↓
 Any user, any tool, any language
-    cat ~/fuse_mount/joint_states/latest
-    echo '{"on":true}' > ~/fuse_mount/swiftpro/set_pump/command
+    cat /mnt/topicfs/joint_states/latest
+    echo '{"on":true}' > /mnt/topicfs/swiftpro/set_pump/command
 ```
 
 ---
@@ -485,26 +455,31 @@ is already in place.
 
 ## Known Issues and Operational Notes
 
+**Service responses**
+A `response` file always holds the result of the last call, including a failed
+one: `{"status":"no response yet"}` before any call, and
+`{"error":"failed to fill request from JSON"}` after a bad request. A failure
+never leaves an earlier success in place.
+
 **FUSE mount not visible on host after restart**
-The shared bind mount does not survive reboots. Run the following before starting
-the runtime container, or make it persistent via systemd:
+Without the `/etc/fstab` entry above, the shared bind mount does not survive
+reboots. Run the following before starting the runtime container:
 ```bash
-sudo mount --bind /home/jack/fuse_mount /home/jack/fuse_mount
-sudo mount --make-shared /home/jack/fuse_mount
+sudo mount --bind /mnt/topicfs /mnt/topicfs
+sudo mount --make-shared /mnt/topicfs
 ```
 
-**"Transport endpoint is not connected" on fuse_mount**
+**"Transport endpoint is not connected" on the mount point**
 The FUSE filesystem was unmounted (container stopped) but the mount point is in
-a stale state. Fix:
+a stale state. `/opt/topicfs/start.sh` clears this. To do it by hand:
 ```bash
-sudo fusermount3 -u /home/jack/fuse_mount 2>/dev/null
-sudo umount -l /home/jack/fuse_mount 2>/dev/null
+sudo fusermount3 -u /mnt/topicfs 2>/dev/null
+sudo umount -l /mnt/topicfs 2>/dev/null
 ```
 
 **Podman SHELL warning during image build**
-`podman-compose` 1.5.0 does not pass `--format docker` to `podman build`. The
-warning is cosmetic — images build and run correctly. Use `podman build --format
-docker` directly for image builds.
+Use `podman build --format docker` for image builds. Without `--format docker`
+the warning is cosmetic: images build and run correctly.
 
 **Services show as base64 instead of JSON**
 The typesupport `.so` for that package is not in `/opt/topicfs_typesupport`.

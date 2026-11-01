@@ -1,14 +1,13 @@
 # docker-compose.runtime.yml
 # Runtime compose for TopicFS on worker.
-# Deployed via deploy_to_worker.sh from NUC.
-# Usage (rootful podman — required for FUSE mount propagation):
-#   sudo docker-compose -f /opt/topicfs/docker-compose.runtime.worker.yml up -d
+# Deployed via scripts/deploy_to_worker.sh from NUC. Start it with:
+#   /opt/topicfs/start.sh
 #
 # Prerequisites:
 #   1. colcon build completed on NUC
 #   2. install tree rsynced to /opt/topicfs/install on worker
 #   3. Runtime image built on NUC and pushed to worker:5000
-#   4. /mnt/topicfs exists and is a shared bind mount
+#   4. /mnt/topicfs exists and is a shared bind mount (see start.sh)
 #   5. swiftpro_resources typesupport deployed to /opt/topicfs_typesupport
 
 x-podman:
@@ -25,6 +24,7 @@ services:
       - /dev/fuse:/dev/fuse
     volumes:
       - /opt/topicfs/install:/home/jack/dev/smithjack.net/topicfs/install:z
+      - /opt/topicfs/entrypoint.sh:/entrypoint.sh:ro
       - /mnt/topicfs:/mnt/topicfs:z,shared
       - /opt/topicfs_typesupport:/opt/topicfs_typesupport:z
     environment:
@@ -33,6 +33,8 @@ services:
       TOPICFS_INSTALL: /home/jack/dev/smithjack.net/topicfs/install
       TOPICFS_MOUNT_POINT: /mnt/topicfs
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      # What robot.smithjack.net needs, and nothing else.
+      TOPICFS_ALLOWED_SERVICES: "['/swiftpro/move_to','/swiftpro/set_servo_angles','/swiftpro/motion_reset']"
     restart: unless-stopped
     security_opt:
       - label=disable
